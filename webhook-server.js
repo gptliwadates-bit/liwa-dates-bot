@@ -368,20 +368,72 @@ async function refreshCatalog() {
 refreshCatalog();                               // عند التشغيل
 setInterval(refreshCatalog, 6 * 60 * 60 * 1000); // كل 6 ساعات
 
+// ===== سحب محتوى صفحات الموقع الأساسية تلقائيًا (WordPress REST API) =====
+const SITE_PAGES = ["faqs", "dates-varieties", "about-us", "business-sector-services", "farmer-services"];
+let siteInfo = "";
+function stripHtml(html) {
+  return (html || "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&#8211;/g, "–")
+    .replace(/&hellip;/g, "…").replace(/&#8217;/g, "'").replace(/&rsquo;/g, "'")
+    .replace(/\s+/g, " ").trim();
+}
+async function refreshSiteInfo() {
+  try {
+    const parts = [];
+    for (const slug of SITE_PAGES) {
+      const res = await fetch(`https://liwadates.com/wp-json/wp/v2/pages?slug=${slug}&_fields=title,content`);
+      if (!res.ok) continue;
+      const arr = await res.json();
+      if (!arr || !arr[0]) continue;
+      const title = (arr[0].title && arr[0].title.rendered) || slug;
+      const text = stripHtml(arr[0].content && arr[0].content.rendered).slice(0, 2000);
+      if (text && text.length > 40) parts.push(`### ${title}\n${text}`);
+    }
+    if (parts.length) {
+      siteInfo = parts.join("\n\n");
+      console.log(`Site info refreshed: ${parts.length} pages`);
+    }
+  } catch (e) {
+    console.error("refreshSiteInfo failed:", e);
+  }
+}
+refreshSiteInfo();
+setInterval(refreshSiteInfo, 12 * 60 * 60 * 1000); // كل 12 ساعة
+
+// تحديث كسول حسب الطلب — مهم لـ Vercel Serverless (اللي مافيهوش مؤقتات دائمة)
+let _refreshing = false;
+async function ensureFresh() {
+  const sixH = 6 * 60 * 60 * 1000;
+  const stale = !liveCatalogUpdatedAt || (Date.now() - liveCatalogUpdatedAt.getTime()) > sixH;
+  if (_refreshing) return;
+  if (stale || !liveCatalog) {
+    _refreshing = true;
+    try { await refreshCatalog(); if (!siteInfo) await refreshSiteInfo(); }
+    finally { _refreshing = false; }
+  }
+}
+
 // يبني الـ system prompt مع الكتالوج الحيّ لو متوفر
 function buildSystemPrompt() {
   if (!liveCatalog) return SYSTEM_PROMPT;
-  return (
+  let out =
     SYSTEM_PROMPT +
     `\n\n## الكتالوج الحيّ (محدّث تلقائيًا من liwadates.com — لكل منتج سعر كل حجم بالضبط + رابطه)\n` +
     `اعتمد على الأسعار دي فقط. اقتبس سعر الحجم اللي يطلبه العميل حرفيًا. ولو حبّ يطلب، اعطِه الرابط.\n` +
-    liveCatalog
-  );
+    liveCatalog;
+  if (siteInfo) {
+    out += `\n\n## معلومات إضافية من صفحات الموقع (محدّثة تلقائيًا — استخدمها للإجابة عن الأسئلة العامة)\n${siteInfo}`;
+  }
+  return out;
 }
 
 // ===== طبقة الاتصال بـ OpenAI (تقبل محادثة كاملة) =====
 async function openaiReply(history) {
   // history = [{role:'user'|'assistant', content:'...'}, ...]
+  await ensureFresh(); // يضمن إن الكتالوج محمّل (خصوصًا على Serverless)
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -816,4 +868,8 @@ app.get("/catalog", (req, res) => {
 
 // ===== تشغيل السيرفر =====
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Liwa Dates bot running on port ${PORT}`));
+// على Render/محليًا: شغّل السيرفر. على Vercel (Serverless): صدّر التطبيق بس.
+if (require.main === module) {
+  app.listen(PORT, () => console.log(`Liwa Dates bot running on port ${PORT}`));
+}
+module.exports = app;

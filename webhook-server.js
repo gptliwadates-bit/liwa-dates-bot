@@ -805,6 +805,15 @@ const CHAT_PAGE = `<!DOCTYPE html>
 </body>
 </html>`;
 
+// ===== تشخيص: عرض جدول الأسعار الفعلي اللي البوت بيقتبس منه =====
+app.get("/catalog", (req, res) => {
+  if (req.query.key !== META_VERIFY_TOKEN) return res.status(403).send("forbidden");
+  res.set("content-type", "text/plain; charset=utf-8").send(
+    "آخر تحديث: " + (liveCatalogUpdatedAt ? liveCatalogUpdatedAt.toISOString() : "لم يُحمّل بعد") +
+    "\n\n" + (liveCatalog || "(الكتالوج فاضي — بيستخدم الأسعار الثابتة)")
+  );
+});
+
 // ===== تشغيل السيرفر =====
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Liwa Dates bot running on port ${PORT}`));

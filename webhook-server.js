@@ -185,46 +185,50 @@ ${"[[HANDOFF]]"}
 لو الرد مش محتاج تحويل، **ماتكتبش العلامة دي إطلاقاً**. متشرحش العلامة للعميل ولا تكتب كلمة HANDOFF في كلامك العادي.
 `;
 
-// ===== دالة تسأل OpenAI (ChatGPT) وترجع الرد =====
+// ===== طبقة الاتصال بـ OpenAI (تقبل محادثة كاملة) =====
+async function openaiReply(history) {
+  // history = [{role:'user'|'assistant', content:'...'}, ...]
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: AI_MODEL,
+      max_tokens: 500,
+      messages: [{ role: "system", content: SYSTEM_PROMPT }, ...history],
+    }),
+  });
+  const data = await res.json();
+  if (data.choices && data.choices[0] && data.choices[0].message) {
+    return data.choices[0].message.content || "";
+  }
+  console.error("OpenAI error:", JSON.stringify(data));
+  return null;
+}
+
+// يفصل علامات الأوردر والتحويل عن الرد اللي بيروح للعميل
+function parseReply(raw) {
+  let text = raw || "";
+  let order = null;
+  const oStart = text.indexOf(ORDER_OPEN);
+  const oEnd = text.indexOf(ORDER_CLOSE);
+  if (oStart !== -1 && oEnd !== -1 && oEnd > oStart) {
+    order = text.slice(oStart + ORDER_OPEN.length, oEnd).trim();
+    text = (text.slice(0, oStart) + text.slice(oEnd + ORDER_CLOSE.length)).trim();
+  }
+  const handoff = text.includes(HANDOFF_TAG);
+  text = text.replace(HANDOFF_TAG, "").trim();
+  return { text, handoff, order };
+}
+
+// ===== دالة تسأل OpenAI برسالة واحدة (تستخدمها قنوات ميتا) =====
 async function askAI(userMessage) {
   try {
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: AI_MODEL,
-        max_tokens: 500,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userMessage },
-        ],
-      }),
-    });
-    const data = await res.json();
-    if (data.choices && data.choices[0] && data.choices[0].message) {
-      let text = data.choices[0].message.content || "";
-
-      // استخراج ملخص الأوردر لو موجود بين العلامتين
-      let order = null;
-      const oStart = text.indexOf(ORDER_OPEN);
-      const oEnd = text.indexOf(ORDER_CLOSE);
-      if (oStart !== -1 && oEnd !== -1 && oEnd > oStart) {
-        order = text.slice(oStart + ORDER_OPEN.length, oEnd).trim();
-        // شيل بلوك الأوردر من الرد اللي بيروح للعميل
-        text = (text.slice(0, oStart) + text.slice(oEnd + ORDER_CLOSE.length)).trim();
-      }
-
-      // لو الموديل قرر تحويل لموظف بشري بيحط العلامة في آخر الرد
-      const handoff = text.includes(HANDOFF_TAG);
-      text = text.replace(HANDOFF_TAG, "").trim();
-
-      return { text, handoff, order };
-    }
-    console.error("OpenAI error:", JSON.stringify(data));
-    return { text: "معلش حصل خطأ بسيط، ممكن تبعت تاني؟", handoff: false, order: null };
+    const raw = await openaiReply([{ role: "user", content: userMessage }]);
+    if (raw === null) return { text: "معلش حصل خطأ بسيط، ممكن تبعت تاني؟", handoff: false, order: null };
+    return parseReply(raw);
   } catch (e) {
     console.error("askAI failed:", e);
     return { text: "معلش حصل خطأ بسيط، ممكن تبعت تاني؟", handoff: false, order: null };
@@ -438,6 +442,103 @@ app.get("/test", async (req, res) => {
   const reply = await askAI(String(msg));
   res.json({ customer_message: msg, bot_reply: reply.text, handoff: reply.handoff, order: reply.order });
 });
+
+// ===== واجهة شات للتجربة =====
+// افتح: https://<your-server>/chat?key=liwa2026
+app.get("/chat", (req, res) => {
+  if (req.query.key !== META_VERIFY_TOKEN) {
+    return res.status(403).send("forbidden — استخدم /chat?key=YOUR_VERIFY_TOKEN");
+  }
+  res.set("content-type", "text/html; charset=utf-8").send(CHAT_PAGE);
+});
+
+// API المحادثة (بذاكرة): يستقبل تاريخ الرسائل ويرجّع رد الوكيل
+app.post("/api/chat", async (req, res) => {
+  if (req.query.key !== META_VERIFY_TOKEN) return res.status(403).json({ error: "forbidden" });
+  try {
+    const history = Array.isArray(req.body.messages) ? req.body.messages.slice(-20) : [];
+    const raw = await openaiReply(history);
+    if (raw === null) return res.json({ reply: "معلش حصل خطأ، جرّب تاني.", handoff: false, order: null });
+    res.json(parseReply(raw));
+  } catch (e) {
+    console.error("/api/chat error:", e);
+    res.json({ reply: "معلش حصل خطأ، جرّب تاني.", handoff: false, order: null });
+  }
+});
+
+const CHAT_PAGE = `<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>تجربة وكيل تمور ليوا</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, "Segoe UI", Tahoma, sans-serif; background:#0e1116; color:#e6e6e6; }
+  header { background:#1a7a4c; color:#fff; padding:14px 16px; font-weight:bold; font-size:18px; display:flex; align-items:center; gap:8px; }
+  #chat { max-width:640px; margin:0 auto; padding:16px; padding-bottom:110px; }
+  .msg { margin:10px 0; display:flex; }
+  .msg .bubble { padding:10px 14px; border-radius:16px; max-width:80%; white-space:pre-wrap; line-height:1.5; font-size:15px; }
+  .user { justify-content:flex-start; }
+  .user .bubble { background:#2563eb; color:#fff; border-bottom-right-radius:4px; }
+  .bot { justify-content:flex-end; }
+  .bot .bubble { background:#1e2530; color:#e6e6e6; border-bottom-left-radius:4px; }
+  .note { text-align:center; font-size:13px; margin:8px 0; }
+  .note span { background:#3a2a12; color:#ffcf8f; padding:4px 10px; border-radius:10px; }
+  .order { text-align:center; font-size:13px; margin:8px 0; }
+  .order span { background:#12331d; color:#8fe0a6; padding:6px 12px; border-radius:10px; white-space:pre-wrap; display:inline-block; text-align:right; }
+  #bar { position:fixed; bottom:0; left:0; right:0; background:#141922; border-top:1px solid #222; padding:12px; }
+  #bar .wrap { max-width:640px; margin:0 auto; display:flex; gap:8px; }
+  #inp { flex:1; padding:12px; border-radius:12px; border:1px solid #333; background:#0e1116; color:#fff; font-size:15px; }
+  #send { padding:12px 18px; border:none; border-radius:12px; background:#1a7a4c; color:#fff; font-weight:bold; cursor:pointer; }
+  #send:disabled { opacity:.5; }
+</style>
+</head>
+<body>
+<header>🌴 تجربة وكيل تمور ليوا</header>
+<div id="chat"></div>
+<div id="bar"><div class="wrap">
+  <input id="inp" placeholder="اكتب رسالتك زي أي عميل..." autocomplete="off">
+  <button id="send">إرسال</button>
+</div></div>
+<script>
+  const key = new URLSearchParams(location.search).get("key") || "";
+  const chat = document.getElementById("chat");
+  const inp = document.getElementById("inp");
+  const send = document.getElementById("send");
+  let history = [];
+  function add(role, text){
+    const d = document.createElement("div");
+    d.className = "msg " + (role==="user"?"user":"bot");
+    d.innerHTML = '<div class="bubble"></div>';
+    d.querySelector(".bubble").textContent = text;
+    chat.appendChild(d); window.scrollTo(0, document.body.scrollHeight);
+  }
+  function note(t){ const d=document.createElement("div"); d.className="note"; d.innerHTML='<span></span>'; d.querySelector("span").textContent=t; chat.appendChild(d); }
+  function orderBox(t){ const d=document.createElement("div"); d.className="order"; d.innerHTML='<span></span>'; d.querySelector("span").textContent="🔔 تنبيه أوردر لصاحب المتجر:\\n"+t; chat.appendChild(d); }
+  add("bot","أهلاً وسهلاً في تمور ليوا 🌴 كيف أقدر أساعدك؟");
+  async function go(){
+    const text = inp.value.trim(); if(!text) return;
+    add("user", text); history.push({role:"user", content:text});
+    inp.value=""; send.disabled=true; inp.disabled=true;
+    try{
+      const r = await fetch("/api/chat?key="+encodeURIComponent(key), {
+        method:"POST", headers:{"content-type":"application/json"},
+        body: JSON.stringify({messages:history})
+      });
+      const data = await r.json();
+      const reply = data.reply || data.text || "(مافيش رد)";
+      add("bot", reply); history.push({role:"assistant", content:reply});
+      if(data.order) orderBox(data.order);
+      if(data.handoff) note("تم تحويل المحادثة لموظف بشري");
+    }catch(e){ add("bot","خطأ في الاتصال."); }
+    send.disabled=false; inp.disabled=false; inp.focus();
+  }
+  send.onclick = go;
+  inp.addEventListener("keydown", e=>{ if(e.key==="Enter") go(); });
+</script>
+</body>
+</html>`;
 
 // ===== تشغيل السيرفر =====
 const PORT = process.env.PORT || 3000;

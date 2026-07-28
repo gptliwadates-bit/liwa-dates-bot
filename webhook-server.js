@@ -800,10 +800,10 @@ const CHAT_PAGE = `<!DOCTYPE html>
   function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
   function linkify(s){
     var t = esc(s);
-    t = t.replace(/(https?:\/\/[^\s]+)/g, function(u){ return '<a href="'+u+'" target="_blank" rel="noopener">'+u+'</a>'; });
+    t = t.replace(/(https?:\\/\\/[^\\s]+)/g, function(u){ return '<a href="'+u+'" target="_blank" rel="noopener">'+u+'</a>'; });
     // ارقام الواتساب/الهاتف الاماراتية -> رابط wa.me قابل للنقر
-    t = t.replace(/\+?9715\d{8}/g, function(p){ var n=p.replace(/\D/g,''); return '<a href="https://wa.me/'+n+'" target="_blank" rel="noopener">'+p+'</a>'; });
-    return t.replace(/\n/g,"<br>");
+    t = t.replace(/\\+?9715\\d{8}/g, function(p){ var n=p.replace(/\\D/g,''); return '<a href="https://wa.me/'+n+'" target="_blank" rel="noopener">'+p+'</a>'; });
+    return t.replace(/\\n/g,"<br>");
   }
   function nowTime(){ var d=new Date(); var h=d.getHours(), m=d.getMinutes(); return (h<10?'0':'')+h+':'+(m<10?'0':'')+m; }
 

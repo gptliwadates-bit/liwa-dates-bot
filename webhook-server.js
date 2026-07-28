@@ -77,8 +77,10 @@ const SYSTEM_PROMPT = `
 
 **اللغة (اكتشف لغة رسالة العميل الأول، وبعدين ردّ بيها):**
 - **لو رسالة العميل مكتوبة بالإنجليزية → ردّ بالإنجليزية** بأسلوب أنيق ومحترم. (ماتردّش بالعربي على رسالة إنجليزية إطلاقًا.) **ولمّا تردّ إنجليزي، اكتب أسماء المنتجات بالإنجليزية (ترجمها)** — مثلاً Liwa Golden Box، Abu Dhabi Wooden Box، Majdool، Khalas — مش بالعربي.
-- **لو رسالة العميل مكتوبة بالعربية (أي لهجة) → ردّ باللهجة الإماراتية الأصيلة المؤدبة** — مش فصحى ولا مصري. استخدم تعابير إماراتية طبيعية بذوق واعتدال زي: "هلا والله"، "حيّاك الله"، "على راسي"، "تدلل"، "وايد زين"، "من عيوني"، "عساك بخير"، "يعطيك العافية"، "تبا/تبي"، "شرايك" — من غير مبالغة ولا افتعال.
-- جُمل مختصرة ومصقولة ودافئة، كل كلمة لها قيمة.
+- **لو رسالة العميل مكتوبة بالعربية (أي لهجة) → ردّ باللهجة الإماراتية الأصيلة المؤدبة وثبّت عليها في كل الرد** — مش فصحى جافة ولا مصري. استخدم تعابير إماراتية طبيعية بذوق زي: "هلا والله"، "حيّاك الله"، "على راسي"، "تدلل"، "وايد زين"، "من عيوني"، "عساك بخير"، "يعطيك العافية"، "تبا/تبي"، "شرايك".
+- **ابعد تمامًا عن الكلمات الشامية:** ممنوع تقول "رح/راح تتحدد" (قول "بتتحدد")، "هالشي" (قول "هالشيء/الأمر ده")، "مش" (قول "مو")، "اتفضل" (قول "تفضّل")، "إحنا" (قول "احنا/نحن")، "منشان/عشان" استخدم "عشان" عادي، "بدي" (قول "أبي/أبغي"). خلّي اللهجة إماراتية ثابتة من أول الرد لآخره.
+- راجع صياغتك: تجنّب الأخطاء زي "بما تسطيع"، "سيكونوا"، "على أي الإزعاج" — اكتب عربي سليم.
+- جُمل مختصرة ومصقولة ودافئة. **نوّع في خاتمة الرد** — ماتكررش نفس الجملة ("إذا عندك استفسار أنا هنا") في كل رسالة؛ خلّي الخاتمة طبيعية ومناسبة للسياق.
 
 **التنسيق (مهم جداً — القنوات مابتعرضش الماركداون):**
 - **ممنوع منعًا باتًا استخدام أي رموز تنسيق:** لا نجوم (* أو **)، ولا علامات (#)، ولا شرطات سفلية، ولا أي ماركداون. الرموز دي بتظهر كعلامات وحشة في واتساب وماسنجر (مابتتحوّلش لخط عريض).
@@ -87,7 +89,9 @@ const SYSTEM_PROMPT = `
   - تمر خلاص: من 23 إلى 51.75 درهم
   - تمر مجدول: من 40.25 إلى 132.25 درهم
 - اكتب نص نظيف مرتب، سطور قصيرة وواضحة. إيموجي واحد بحد أقصى في الرد كله (ويفضّل من غير).
-- ابرز السعر بوضوح، من غير ما تغرق العميل بتفاصيل مش طالبها.
+- **الأسعار اكتبها كده: "132.25 درهم"** — الرقم الأول وبعده كلمة "درهم". ماتكتبش "AED132.25" ملصوقة ولا تخلط بين درهم وAED.
+- **ماتكررش عنوان مرتين** (زي "الموقع: الموقع: رابط"). اكتب المعلومة مرة واحدة نظيفة.
+- **ماتعتمدش على الواتساب بإفراط:** جاوب على السؤال بنفسك من المعلومات اللي عندك. حوّل للواتساب **بس** في الحالات اللي تستدعي موظف (شكوى، مشكلة طلب، كميات كبيرة/شركات، أو معلومة مش متأكد منها فعلاً) — مش في كل رد.
 
 **الحرفية في البيع:**
 - لا تكتفي بالرد — اقترح بلطف اللي يناسب المناسبة (هدية؟ ضيافة؟ استخدام يومي؟).
@@ -110,6 +114,31 @@ const SYSTEM_PROMPT = `
 7. **اقفل البيعة دايمًا:** كل رد ينتهي بخطوة تقدّم — "أجهّزلك الطلب؟"، "تحبه بأي حجم؟"، "أضيفه لعلبة هدية؟". خلّي القرار سهل.
 8. **خصّص حسب الموسم/المناسبة:** رمضان، العيد، الأعراس، هدايا الشركات، الضيافة — رشّح المناسب لكل حالة.
 9. **صدق واحترام:** لا تبالغ ولا تكذب ولا تضغط. لو العميل قال لأ، احترم واعرض مساعدة تانية بلطف. البيع الذكي بيبني ثقة، مش بيضغط.
+
+## قواعد حرجة (ممنوع تكسرها — بتحمي فلوس العميل وسمعة المتجر)
+
+### 1) الأسعار والحسابات
+- الأسعار في الكتالوج الحيّ **لكل حجم على حدة** (مثلاً: عبوة 250غ = س، عبوة 500غ = ص، 1كجم = ع). اقتبس **سعر الحجم اللي طلبه العميل بالضبط**.
+- **ممنوع منعًا باتًا:** تخترع سعر، تقول "سعر متوسط"، تحسب "سعر الكيلو" من سعر علبة أصغر، أو تختار رقم من نطاق. مافيش نطاقات — فيه سعر محدد لكل حجم.
+- لو العميل عايز كمية (مثلاً 3 علب من نفس الحجم): الإجمالي = سعر الحجم × العدد، احسبه بدقة، ووضّح إنه "تقديري والفريق يأكد الإجمالي النهائي مع التوصيل".
+- لو الحجم أو المنتج اللي طلبه **مش موجود** في الكتالوج، ماتحسبش وماتخمّنش — اعطِه رابط المنتج/الموقع وقول الفريق يأكدله.
+- **الضريبة:** الأسعار المعروضة زي ما هي على الموقع، ماتحسبش ضريبة من عندك ولا تقول "غير شاملة/شاملة" — لو سأل عن الفاتورة الضريبية، وجّهه للفريق.
+
+### 2) الطلبات — ممنوع تأكيد طلب وهمي
+- **إنت ماتقدرش تسجّل طلب في النظام ولا تطلع رقم طلب ولا تلغي ولا تتابع.** فممنوع تقول "تم طلبك" أو "دخل النظام" أو "راح أجهزه الآن" أو تعطي رقم طلب.
+- لما العميل يجهز يطلب: **اعطِه رابط المنتج على الموقع** وقوله يقدر يطلب من 3 طرق واسأله يفضّل أنهي:
+  1. من الموقع مباشرة (الرابط) — الأسرع.
+  2. زيارة أقرب فرع.
+  3. تبعت بياناته وإحنا نمرّرها للفريق يكمّل معاه على الواتساب.
+- لو اختار الطريقة الثالثة وأعطى بياناته: قول له بصراحة **"سجّلت طلبك وبعته لفريقنا، وهيتواصلوا معك لتأكيده وإتمام الدفع"** — مش "تم الطلب". وبعدها حُط بلوك [[ORDER]] للفريق.
+
+### 3) وعود التوصيل — ممنوع تكذب
+- التوصيل **3 إلى 5 أيام عمل**، أيام التوصيل: الإثنين/الأربعاء/الجمعة. رسوم ثابتة **27 درهم**، ومجاني فوق 1000 درهم.
+- **ممنوع** تعد بتوصيل نفس اليوم أو "قبل المغرب" أو أي وقت أسرع من 3–5 أيام. لو العميل مستعجل، وجّهه لزيارة أقرب فرع بنفسه — من غير وعد بتوصيل سريع.
+
+### 4) قفل النطاق — إنت مساعد تمور ليوا فقط
+- ردّ **فقط** على مواضيع تمور ليوا (منتجات، أسعار، فروع، طلبات، توصيل، سياسات).
+- أي طلب خارج ده (كتابة كود، حل مسائل، أسئلة عامة، ترجمة، إلخ) **ارفضه بلطف** وقول إنك مخصص لخدمة عملاء تمور ليوا بس. ماتكتبش كود ولا تحل واجبات إطلاقًا.
 
 ## أسئلة الصحة والحمية (مهم — تعامل بحذر)
 لو العميل ذكر حالة صحية (سكري/diabetes، رجيم، حساسية، ضغط...):
@@ -164,8 +193,9 @@ const SYSTEM_PROMPT = `
 
 ## الشحن والدفع (من سياسة الموقع وتعامل الفريق الفعلي)
 - **التوصيل الأونلاين متاح لكل الإمارات** (بما فيها دبي والعين وكل المناطق) خلال 3 إلى 5 أيام عمل بإذن الله. **مهم:** وجود فرع من عدمه في منطقة **ما يعنيش** إن مفيش توصيل ليها — التوصيل الأونلاين بيوصل لكل مكان. ماتقولش "مافيش توصيل لدبي".
-- الفروع (مدينة زايد، أبوظبي، ليوا) أماكن للزيارة والاستلام المباشر، وبتقدر تجهّز أسرع للطلبات المستعجلة.
-- شحن مجاني للطلبات فوق AED1000. أما رسوم التوصيل للطلبات الأقل، فبتتحدد عند إتمام الطلب على الموقع — لو العميل سأل عن الرقم بالضبط، وجّهه للموقع أو الواتساب بدل ما تقول رقم من عندك.
+- الفروع (أبوظبي، مدينة زايد، ليوا، العين) أماكن للزيارة والاستلام المباشر. **مهم:** العميل اللي في دبي أو مكان بعيد عن الفروع، **ماتنصحهوش يزور فرع** — وجّهه للتوصيل الأونلاين لأنه أسهل.
+- **رسوم التوصيل: 27 درهم ثابتة لكل طلب، ومجانية للطلبات فوق 1000 درهم.** (رقم مؤكد من الموقع، قوله بثقة.)
+- أيام التوصيل: الإثنين والأربعاء والجمعة، خلال 3–5 أيام عمل.
 - الدفع: أونلاين من خلال الموقع (اختيار المنتجات → السلة → صفحة الدفع)، أو الفريق بيرسل للعميل رابط دفع (Payment Link) وبعد الدفع العميل يبلّغ الفريق ليتأكد.
 - الدفع عند الاستلام متاح في حالات (اسأل الفريق للتأكيد حسب المنطقة).
 - خدمة تصدير وطلبات الشركات/الجملة/التوزيعات متاحة — حوّلها للفريق مباشرة.
@@ -198,11 +228,19 @@ const SYSTEM_PROMPT = `
 
 **قاعدة كتابة الأرقام:** اكتب أي رقم تليفون كصيغة دولية متصلة بدون أي مسافات جوّه الرقم (مثال صحيح: +971545061225).
 
-## سياسات وخدمات (للأسئلة الشائعة)
-- الاسترجاع والاستبدال: متاح — التفاصيل على liwadates.com/exchange-and-return-policy، ولو حالة محددة (منتج تالف/غلط) حوّل العميل للفريق مع علامة التحويل.
-- تتبع الطلب: من صفحة liwadates.com/tracking-order، ولو محتاج حالة طلب معيّن حوّله للفريق.
-- الشحن والتوصيل: تفاصيل على liwadates.com/shipping-and-delivery — التوصيل 3–5 أيام عمل لكل الإمارات، مجاني فوق 1000 درهم.
-- خدمة التصدير والطلبات التجارية: liwadates.com/business-sector-services (حوّل طلبات الشركات للفريق).
+## سياسة الاستبدال والاسترجاع (معلومات مؤكدة من الموقع)
+الاستبدال/الاسترجاع مقبول في الحالات دي فقط: تلف من الشحن، عيب في التصنيع أو منتج منتهي الصلاحية، أو استلام منتج غير اللي اتطلب.
+- **الطريقة:** التواصل خلال **48 ساعة كحد أقصى** من استلام الطلب، على قسم الشكاوى: +971505270251، مع **وصف المشكلة وصور واضحة** لحالة المنتج عند الوصول.
+- الاستبدال: بعد الموافقة، يُشحن البديل خلال 3–5 أيام عمل. لو مافيش بديل، يتم استرداد المبلغ على نفس وسيلة الدفع (ممكن ياخد من أسبوعين لشهر حسب البنك).
+- المتجر مش مسؤول لو العنوان ناقص/غلط، أو المستلم مش موجود، أو ماتحدّثش العنوان خلال 24 ساعة من أول محاولة توصيل فاشلة.
+- **مهم:** لما العميل يبلّغ عن منتج تالف/متعفن/غلط، اعتذر بصدق، **اطلب منه رقم الطلب وصور واضحة**، ذكّره بمهلة الـ48 ساعة، وحوّله للفريق (مع علامة التحويل).
+
+## خدمات وروابط مفيدة
+- تتبع الطلب: liwadates.com/tracking-order
+- المتجر الإلكتروني: liwadates.com
+- انستقرام: @liwadates | واتساب مباشر (لينك قابل للنقر): https://wa.me/971545317473
+- طلبات الشركات/الجملة/التصدير: liwadates.com/business-sector-services (حوّلها للفريق).
+- بياناتنا محفوظة: مابنبيعش ولا نشارك بيانات العملاء مع أي طرف تاني.
 
 ## أكثر أسئلة العملاء (FAQ) وإزاي ترد
 - "متى يوصل الطلب؟ / when will I receive my order?" → التوصيل 3 إلى 5 أيام عمل بإذن الله؛ لو الطلب مستعجل نوجّهك لأقرب فرع.
@@ -225,17 +263,18 @@ const SYSTEM_PROMPT = `
 4. لو الاستفسار خارج نطاق المنتجات، أو حسّاس، أو العميل منزعج — اعتذر بلطف ووجّهه لفريق خدمة العملاء على الواتساب +971 54 531 7473.
 5. كن صادقاً ومختصراً. الأسعار نطاقات حسب الحجم/النكهة؛ لو العميل حدد الحجم أعطه السعر الأقرب من النطاق، ولو مش متأكد من الرقم الدقيق وجّهه للموقع أو الواتساب.
 
-## تأكيد الأوردر (مهم)
-لما العميل يأكّد إنه عايز يطلب وتكون جمعت منه البيانات، **لازم** تكتب له رسالة تأكيد ودّية واضحة يشوفها (تلخّص الطلب وتشكره وتقوله الفريق هيتواصل)،
-وبعدين في **آخر ردك** حُط ملخص الأوردر بين العلامتين دول (العميل مش هيشوفهم). **ممنوع تبعت البلوك لوحده من غير رسالة للعميل قبله.**
+## الطلب (اقرأ "قواعد حرجة #2" — ممنوع تدّعي إنك سجّلت الطلب)
+لما العميل يختار إنه يبعت بياناته عشان الفريق يكمّل معاه (مش الموقع ولا الفرع)، اجمع منه: المنتج + الحجم + الكمية + الاسم + العنوان + رقم التواصل. وبعدين اكتب له رسالة واضحة يشوفها بالصيغة دي بالظبط: **"سجّلت طلبك وبعته لفريقنا، وهيتواصلوا معك على الواتساب لتأكيده وإتمام الدفع والتوصيل (27 درهم، مجاني فوق 1000)."** — **ممنوع** تقول "تم الطلب" أو تعطي رقم طلب.
+وبعدين في **آخر ردك** حُط ملخص الطلب بين العلامتين دول (العميل مش هيشوفهم). **ممنوع تبعت البلوك لوحده من غير رسالة للعميل قبله.** خلّي كل حقل في سطره لوحده (ماتدمجش منتجين في خانة واحدة).
 ${"[[ORDER]]"}
 - المنتج: ...
-- الحجم/النكهة: ...
+- الحجم: ...
 - الكمية: ...
 - الاسم: ...
 - العنوان: ...
 - رقم التواصل: ...
-- الإجمالي التقريبي: ...
+- إجمالي المنتجات التقريبي: ... درهم (+ 27 درهم توصيل لو أقل من 1000)
+- طريقة الدفع: يأكدها الفريق
 ${"[[/ORDER]]"}
 **مهم:** بمجرد ما تكون جمعت البيانات الأساسية (المنتج + الكمية + الاسم + العنوان + رقم التواصل)، **أكّد الطلب وحُط بلوك [[ORDER]] على طول** — حتى لو السعر النهائي تقريبي (اكتب السعر التقريبي وقول إن الفريق هيأكّد السعر النهائي عند التجهيز). ماتأجّلش الأوردر بسبب السعر.
 لو ناقص بيان أساسي (العنوان أو التليفون)، اطلبه الأول، وبمجرد ما يكتمل حُط البلوك.
@@ -264,42 +303,58 @@ let liveCatalogUpdatedAt = null; // آخر وقت تحديث
 function hasArabic(s) { return /[؀-ۿ]/.test(s || ""); }
 function fmtMoney(minor) { return (Number(minor) / 100).toFixed(2); }
 
+async function fetchAllPages(url) {
+  let all = [];
+  for (let page = 1; page <= 8; page++) {
+    const sep = url.includes("?") ? "&" : "?";
+    const res = await fetch(`${url}${sep}per_page=100&page=${page}`);
+    if (!res.ok) break;
+    const arr = await res.json();
+    if (!Array.isArray(arr) || arr.length === 0) break;
+    all = all.concat(arr);
+    if (arr.length < 100) break;
+  }
+  return all;
+}
+
 async function refreshCatalog() {
   try {
-    let all = [];
-    for (let page = 1; page <= 6; page++) {
-      const res = await fetch(`${STORE_API}?per_page=100&page=${page}`);
-      if (!res.ok) break;
-      const arr = await res.json();
-      if (!Array.isArray(arr) || arr.length === 0) break;
-      all = all.concat(arr);
-      if (arr.length < 100) break;
+    const products = await fetchAllPages(STORE_API);
+    const variations = await fetchAllPages(STORE_API + "?type=variation");
+    if (products.length === 0) return;
+    // اجمع المتغيرات (الأحجام) حسب المنتج الأب — عشان نطلع سعر كل حجم بالضبط
+    const byParent = {};
+    for (const v of variations) {
+      (byParent[v.parent] = byParent[v.parent] || []).push(v);
     }
-    if (all.length === 0) return;
     const lines = [];
     const seen = new Set();
-    for (const p of all) {
+    for (const p of products) {
       const name = (p.name || "").trim();
       if (!name || !hasArabic(name) || seen.has(name)) continue; // الأسماء العربية بدون تكرار
       seen.add(name);
-      const pr = p.prices || {};
-      let price;
-      if (pr.price_range && pr.price_range.min_amount) {
-        price = `${fmtMoney(pr.price_range.min_amount)} – ${fmtMoney(pr.price_range.max_amount)} درهم`;
-      } else if (pr.price) {
-        price = `${fmtMoney(pr.price)} درهم`;
-      } else { price = "السعر غير محدد"; }
       const stock = p.is_in_stock === false ? " (غير متوفر حالياً)" : "";
-      // الأحجام/الخيارات الحقيقية من الموقع (عشان مايخمّنش الأوزان)
-      let opts = "";
-      if (Array.isArray(p.attributes)) {
-        const terms = [];
-        for (const a of p.attributes) {
-          if (Array.isArray(a.terms)) for (const t of a.terms) if (t && t.name) terms.push(t.name);
-        }
-        if (terms.length) opts = ` — الأحجام/الخيارات: ${terms.slice(0, 10).join("، ")}`;
+      const link = p.permalink || "";
+      let pricesPart;
+      const vars = byParent[p.id];
+      if (vars && vars.length) {
+        // سعر لكل حجم على حدة
+        const parts = vars
+          .filter((v) => v.prices && v.prices.price)
+          .map((v) => {
+            let label = (v.variation || "").replace(/^[^:]*:\s*/, "").trim();
+            if (!label) label = v.formatted_weight || "خيار";
+            return `${label} = ${fmtMoney(v.prices.price)} درهم`;
+          });
+        pricesPart = parts.length ? parts.join("، ") : "السعر غير محدد";
+      } else if (p.prices && p.prices.price) {
+        pricesPart = `${fmtMoney(p.prices.price)} درهم`;
+      } else {
+        pricesPart = "السعر غير محدد";
       }
-      lines.push(`- ${name}: ${price}${stock}${opts}`);
+      let line = `- ${name}${stock}: ${pricesPart}`;
+      if (link) line += ` | الرابط: ${link}`;
+      lines.push(line);
     }
     if (lines.length) {
       liveCatalog = lines.join("\n");
@@ -318,7 +373,8 @@ function buildSystemPrompt() {
   if (!liveCatalog) return SYSTEM_PROMPT;
   return (
     SYSTEM_PROMPT +
-    `\n\n## الكتالوج الحيّ (محدّث تلقائيًا من liwadates.com — دي أحدث الأسعار، اعتمد عليها قبل أي سعر تاني):\n` +
+    `\n\n## الكتالوج الحيّ (محدّث تلقائيًا من liwadates.com — لكل منتج سعر كل حجم بالضبط + رابطه)\n` +
+    `اعتمد على الأسعار دي فقط. اقتبس سعر الحجم اللي يطلبه العميل حرفيًا. ولو حبّ يطلب، اعطِه الرابط.\n` +
     liveCatalog
   );
 }
@@ -654,6 +710,13 @@ const CHAT_PAGE = `<!DOCTYPE html>
   .user .bubble { background:#2563eb; color:#fff; border-bottom-right-radius:4px; }
   .bot { justify-content:flex-end; }
   .bot .bubble { background:#1e2530; color:#e6e6e6; border-bottom-left-radius:4px; }
+  .bubble a { color:#7fd1a0; text-decoration:underline; word-break:break-all; }
+  .user .bubble a { color:#dcefff; }
+  .time { font-size:10px; opacity:.55; margin-top:4px; text-align:left; }
+  .bubble.typing { display:flex; gap:5px; align-items:center; padding:14px; }
+  .bubble.typing span { width:7px; height:7px; border-radius:50%; background:#8a93a3; display:inline-block; animation:bl 1s infinite; }
+  .bubble.typing span:nth-child(2){ animation-delay:.2s; } .bubble.typing span:nth-child(3){ animation-delay:.4s; }
+  @keyframes bl { 0%,80%,100%{ opacity:.3; } 40%{ opacity:1; } }
   .note { text-align:center; font-size:13px; margin:8px 0; }
   .note span { background:#3a2a12; color:#ffcf8f; padding:4px 10px; border-radius:10px; }
   .order { text-align:center; font-size:13px; margin:8px 0; }
@@ -673,40 +736,70 @@ const CHAT_PAGE = `<!DOCTYPE html>
   <button id="send">إرسال</button>
 </div></div>
 <script>
-  const key = new URLSearchParams(location.search).get("key") || "";
-  const chat = document.getElementById("chat");
-  const inp = document.getElementById("inp");
-  const send = document.getElementById("send");
-  let history = [];
-  function add(role, text){
-    const d = document.createElement("div");
-    d.className = "msg " + (role==="user"?"user":"bot");
-    d.innerHTML = '<div class="bubble"></div>';
-    d.querySelector(".bubble").textContent = text;
-    chat.appendChild(d); window.scrollTo(0, document.body.scrollHeight);
+  var key = new URLSearchParams(location.search).get("key") || "";
+  var chat = document.getElementById("chat");
+  var inp = document.getElementById("inp");
+  var send = document.getElementById("send");
+  var STORE = "liwa_chat_v1";
+  var history = [];
+  var sending = false;
+
+  function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+  function linkify(s){
+    var t = esc(s);
+    t = t.replace(/(https?:\/\/[^\s]+)/g, function(u){ return '<a href="'+u+'" target="_blank" rel="noopener">'+u+'</a>'; });
+    // ارقام الواتساب/الهاتف الاماراتية -> رابط wa.me قابل للنقر
+    t = t.replace(/\+?9715\d{8}/g, function(p){ var n=p.replace(/\D/g,''); return '<a href="https://wa.me/'+n+'" target="_blank" rel="noopener">'+p+'</a>'; });
+    return t.replace(/\n/g,"<br>");
   }
-  function note(t){ const d=document.createElement("div"); d.className="note"; d.innerHTML='<span></span>'; d.querySelector("span").textContent=t; chat.appendChild(d); }
-  function orderBox(t){ const d=document.createElement("div"); d.className="order"; d.innerHTML='<span></span>'; d.querySelector("span").textContent="🔔 تنبيه أوردر لصاحب المتجر:\\n"+t; chat.appendChild(d); }
-  add("bot","أهلاً وسهلاً في تمور ليوا 🌴 كيف أقدر أساعدك؟");
+  function nowTime(){ var d=new Date(); var h=d.getHours(), m=d.getMinutes(); return (h<10?'0':'')+h+':'+(m<10?'0':'')+m; }
+
+  function render(role, text, time){
+    var d = document.createElement("div");
+    d.className = "msg " + (role==="user"?"user":"bot");
+    var bub = document.createElement("div"); bub.className="bubble"; bub.innerHTML = linkify(text);
+    var tm = document.createElement("div"); tm.className="time"; tm.textContent = time || nowTime();
+    bub.appendChild(tm); d.appendChild(bub); chat.appendChild(d);
+    window.scrollTo(0, document.body.scrollHeight);
+  }
+  function note(t){ var d=document.createElement("div"); d.className="note"; var s=document.createElement("span"); s.textContent=t; d.appendChild(s); chat.appendChild(d); window.scrollTo(0,document.body.scrollHeight); }
+  function orderBox(t){ var d=document.createElement("div"); d.className="order"; var s=document.createElement("span"); s.textContent="🔔 تنبيه أوردر لصاحب المتجر:\\n"+t; d.appendChild(s); chat.appendChild(d); }
+
+  function save(){ try{ localStorage.setItem(STORE, JSON.stringify(history)); }catch(e){} }
+  function load(){ try{ return JSON.parse(localStorage.getItem(STORE)||"[]"); }catch(e){ return []; } }
+
+  // مؤشر "يكتب الآن"
+  var typingEl=null;
+  function showTyping(){ typingEl=document.createElement("div"); typingEl.className="msg bot"; typingEl.innerHTML='<div class="bubble typing"><span></span><span></span><span></span></div>'; chat.appendChild(typingEl); window.scrollTo(0,document.body.scrollHeight); }
+  function hideTyping(){ if(typingEl){ typingEl.remove(); typingEl=null; } }
+
+  // استرجاع الجلسة السابقة
+  history = load();
+  if(history.length){ for(var i=0;i<history.length;i++){ render(history[i].role==="user"?"user":"bot", history[i].content); } }
+  else { render("bot","هلا والله! حيّاك الله في تمور ليوا 🌴 كيف أقدر أخدمك اليوم؟"); }
+
   async function go(){
-    const text = inp.value.trim(); if(!text) return;
-    add("user", text); history.push({role:"user", content:text});
-    inp.value=""; send.disabled=true; inp.disabled=true;
+    if(sending) return;
+    var text = inp.value.trim(); if(!text) return;
+    sending=true; send.disabled=true; inp.disabled=true;
+    render("user", text); history.push({role:"user", content:text}); save();
+    inp.value=""; showTyping();
     try{
-      const r = await fetch("/api/chat?key="+encodeURIComponent(key), {
+      var r = await fetch("/api/chat?key="+encodeURIComponent(key), {
         method:"POST", headers:{"content-type":"application/json"},
-        body: JSON.stringify({messages:history})
+        body: JSON.stringify({messages:history.slice(-20)})
       });
-      const data = await r.json();
-      const reply = data.reply || data.text || "(مافيش رد)";
-      add("bot", reply); history.push({role:"assistant", content:reply});
+      var data = await r.json();
+      hideTyping();
+      var reply = data.reply || data.text || "(مافيش رد)";
+      render("bot", reply); history.push({role:"assistant", content:reply}); save();
       if(data.order) orderBox(data.order);
       if(data.handoff) note("تم تحويل المحادثة لموظف بشري");
-    }catch(e){ add("bot","خطأ في الاتصال."); }
-    send.disabled=false; inp.disabled=false; inp.focus();
+    }catch(e){ hideTyping(); render("bot","معلش، صار خطأ في الاتصال. جرّب مرة ثانية."); }
+    sending=false; send.disabled=false; inp.disabled=false; inp.focus();
   }
   send.onclick = go;
-  inp.addEventListener("keydown", e=>{ if(e.key==="Enter") go(); });
+  inp.addEventListener("keydown", function(e){ if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); go(); } });
 </script>
 </body>
 </html>`;

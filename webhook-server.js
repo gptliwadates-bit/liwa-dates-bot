@@ -415,6 +415,18 @@ function wantsHuman(text) {
   return HANDOFF_KEYWORDS.some((k) => t.includes(k));
 }
 
+// شبكة أمان: كلمات تدل على شكوى/مشكلة/طلب كبير → تحويل تلقائي لموظف حتى لو الموديل ماحطش العلامة
+const ESCALATION_KEYWORDS = [
+  "متأخر", "متأخره", "ما وصل", "ماوصل", "لسه ما", "تالف", "بايظ", "فاسد", "غلط", "مو اللي طلبت",
+  "استرجاع", "استبدال", "ريفند", "شكوى", "اشتكي", "متضايق", "زعلان", "اتخصم", "خصم مبلغ",
+  "كمية كبيرة", "كميات كبيرة", "بالجملة", "جمله", "توزيع", "تصدير", "فاتورة", "شركتي", "لشركتي",
+  "refund", "damaged", "wrong item", "late", "delayed", "hasn't arrived", "bulk", "wholesale", "corporate", "invoice", "complaint",
+];
+function needsEscalation(text) {
+  const t = (text || "").toLowerCase();
+  return ESCALATION_KEYWORDS.some((k) => t.includes(k));
+}
+
 // ===== إرسال رد للفيسبوك/انستجرام =====
 async function sendMessenger(recipientId, text) {
   await fetch(
@@ -517,10 +529,10 @@ app.post("/webhook", async (req, res) => {
                 `🌴 أوردر جديد — ${channel}\n\n${reply.order}\n\nمعرّف العميل: ${senderId}`
               );
             }
-            if (reply.handoff) {
+            if (reply.handoff || needsEscalation(event.message.text)) {
               await passToHuman(senderId);
               handedOff.add(senderId);
-              console.log("Handoff (AI decided) → human:", senderId);
+              console.log("Handoff → human:", senderId);
             }
           }
         }
@@ -554,9 +566,9 @@ app.post("/webhook", async (req, res) => {
                   `🌴 أوردر جديد — واتساب\n\n${reply.order}\n\nرقم العميل: ${from}`
                 );
               }
-              if (reply.handoff) {
+              if (reply.handoff || needsEscalation(msg.text.body)) {
                 handedOff.add(from);
-                console.log("WhatsApp handoff (AI decided):", from);
+                console.log("WhatsApp handoff:", from);
               }
             }
           }
@@ -613,7 +625,11 @@ app.post("/api/chat", async (req, res) => {
     const history = Array.isArray(req.body.messages) ? req.body.messages.slice(-20) : [];
     const raw = await openaiReply(history);
     if (raw === null) return res.json({ reply: "معلش حصل خطأ، جرّب تاني.", handoff: false, order: null });
-    res.json(parseReply(raw));
+    const parsed = parseReply(raw);
+    // شبكة أمان: لو آخر رسالة عميل فيها إشارة شكوى/تصعيد، فعّل التحويل
+    const lastUser = [...history].reverse().find((m) => m.role === "user");
+    if (lastUser && needsEscalation(lastUser.content)) parsed.handoff = true;
+    res.json(parsed);
   } catch (e) {
     console.error("/api/chat error:", e);
     res.json({ reply: "معلش حصل خطأ، جرّب تاني.", handoff: false, order: null });

@@ -480,12 +480,28 @@ async function openaiReply(history) {
 
 // بيع بالصورة تلقائي: لو الرد بيرشّح منتج بالاسم ومحطّش صورة، نرفق صورته من الكتالوج
 const RECOMMEND_HINT = /أنصح|انصح|أرشّح|ارشح|اقترح|أقترح|ننصح|نرشّح|الأفضل|الانسب|الأنسب|الألذ|الالذ|ألذ|recommend|suggest|best choice|perfect for/i;
+// كلمات عامة مش مميّزة لمنتج معيّن (نتجاهلها في المطابقة)
+const IMG_STOPWORDS = new Set([
+  "تمر", "تمور", "رطب", "فاخر", "فاخره", "طازج", "طازه", "علبه", "كبير", "صغير", "وزن", "درهم",
+  "مغلف", "ساده", "محشو", "محشي", "صندوق", "هدايا", "هديه", "صينيه", "رقائق", "ليوا", "مجموعه", "بوكس",
+]);
+function normAr(s) {
+  return (s || "")
+    .replace(/ـ/g, "")               // تطويل
+    .replace(/[أإآ]/g, "ا").replace(/ة/g, "ه").replace(/ى/g, "ي")
+    .replace(/(^|\s)ال/g, "$1");          // شيل "ال" التعريف من بداية الكلمات
+}
+function distinctiveTokens(core) {
+  return normAr(core).split(/\s+/).filter((w) => w.length >= 4 && !IMG_STOPWORDS.has(w));
+}
 function autoImagesFromReply(text, existing) {
-  if (existing && existing.length) return existing;              // الموديل حط صورة بالفعل
+  if (existing && existing.length) return existing;               // الموديل حط صورة بالفعل
   if (!text || !RECOMMEND_HINT.test(text)) return existing || []; // بس وقت الترشيح/البيع
   if (!productImages || !productImages.length) return existing || [];
+  const t = normAr(text);
   for (const p of productImages) {                               // الأطول أول = الأكثر تحديدًا
-    if (p.core && text.includes(p.core)) return [p.img];         // أول (أدق) تطابق، صورة واحدة
+    const toks = distinctiveTokens(p.core);
+    if (toks.length && toks.some((w) => t.includes(w))) return [p.img];
   }
   return existing || [];
 }

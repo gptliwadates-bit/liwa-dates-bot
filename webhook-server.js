@@ -794,7 +794,7 @@ const CHAT_PAGE = `<!DOCTYPE html>
   var inp = document.getElementById("inp");
   var send = document.getElementById("send");
   var STORE = "liwa_chat_v1";
-  var history = [];
+  var convo = [];
   var sending = false;
 
   function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
@@ -818,7 +818,7 @@ const CHAT_PAGE = `<!DOCTYPE html>
   function note(t){ var d=document.createElement("div"); d.className="note"; var s=document.createElement("span"); s.textContent=t; d.appendChild(s); chat.appendChild(d); window.scrollTo(0,document.body.scrollHeight); }
   function orderBox(t){ var d=document.createElement("div"); d.className="order"; var s=document.createElement("span"); s.textContent="🔔 تنبيه أوردر لصاحب المتجر:\\n"+t; d.appendChild(s); chat.appendChild(d); }
 
-  function save(){ try{ localStorage.setItem(STORE, JSON.stringify(history)); }catch(e){} }
+  function save(){ try{ localStorage.setItem(STORE, JSON.stringify(convo)); }catch(e){} }
   function load(){ try{ return JSON.parse(localStorage.getItem(STORE)||"[]"); }catch(e){ return []; } }
 
   // مؤشر "يكتب الآن"
@@ -827,25 +827,25 @@ const CHAT_PAGE = `<!DOCTYPE html>
   function hideTyping(){ if(typingEl){ typingEl.remove(); typingEl=null; } }
 
   // استرجاع الجلسة السابقة
-  history = load();
-  if(history.length){ for(var i=0;i<history.length;i++){ render(history[i].role==="user"?"user":"bot", history[i].content); } }
+  convo = load();
+  if(convo.length){ for(var i=0;i<convo.length;i++){ render(convo[i].role==="user"?"user":"bot", convo[i].content); } }
   else { render("bot","هلا والله! حيّاك الله في تمور ليوا 🌴 كيف أقدر أخدمك اليوم؟"); }
 
   async function go(){
     if(sending) return;
     var text = inp.value.trim(); if(!text) return;
     sending=true; send.disabled=true; inp.disabled=true;
-    render("user", text); history.push({role:"user", content:text}); save();
+    render("user", text); convo.push({role:"user", content:text}); save();
     inp.value=""; showTyping();
     try{
       var r = await fetch("/api/chat?key="+encodeURIComponent(key), {
         method:"POST", headers:{"content-type":"application/json"},
-        body: JSON.stringify({messages:history.slice(-20)})
+        body: JSON.stringify({messages:convo.slice(-20)})
       });
       var data = await r.json();
       hideTyping();
       var reply = data.reply || data.text || "(مافيش رد)";
-      render("bot", reply); history.push({role:"assistant", content:reply}); save();
+      render("bot", reply); convo.push({role:"assistant", content:reply}); save();
       if(data.order) orderBox(data.order);
       if(data.handoff) note("تم تحويل المحادثة لموظف بشري");
     }catch(e){ hideTyping(); render("bot","معلش، صار خطأ في الاتصال. جرّب مرة ثانية."); }

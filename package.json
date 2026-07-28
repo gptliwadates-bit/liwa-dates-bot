@@ -1,0 +1,16 @@
+{
+  "name": "liwa-dates-ai-agent",
+  "version": "1.0.0",
+  "description": "وكيل رد آلي بالذكاء الاصطناعي لتمور ليوا عبر Meta (فيسبوك/انستجرام/واتساب) + Claude",
+  "main": "webhook-server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node webhook-server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

@@ -280,6 +280,14 @@ ${"[[/ORDER]]"}
 لو ناقص بيان أساسي (العنوان أو التليفون)، اطلبه الأول، وبمجرد ما يكتمل حُط البلوك.
 حط العلامات دي فقط لما تكون البيانات الأساسية مكتملة؛ لو لسه في أول المحادثة وبتستكشف، ماتحطهاش.
 
+## صور المنتجات
+لو العميل طلب يشوف صورة المنتج أو شكله ("وريني صورته"، "ممكن صورة"، "شكله ايه"…)، **انت تقدر تعرضهاله** — ماتقولش أبداً إنك "ما تقدر تعرض صور".
+اكتب جملة قصيرة (زي "تفضّل صورة [اسم المنتج] 🌴")، وبعدين حُط علامة الصورة كده بالضبط في سطر لوحدها، باستخدام رابط الصورة الموجود في الكتالوج لنفس المنتج (الحقل اللي بعد كلمة "صورة:"):
+${"[[IMG:رابط_الصورة]]"}
+- استخدم **فقط** رابط صورة موجود حرفيًا في الكتالوج لنفس المنتج — ممنوع تخترع أو تعدّل رابط.
+- تقدر تحط أكتر من علامة صورة لو بتعرض أكتر من منتج (كل واحدة في سطر).
+- متشرحش العلامة للعميل ولا تكتب كلمة IMG في كلامك العادي.
+
 ## التحويل لموظف بشري (مهم جداً)
 لما "تقف" أو تحس إنك مش قادر تخدم العميل صح، لازم تحوّله لموظف بشري. حالات التحويل:
 - العميل طلب صراحةً يكلّم موظف/إنسان/خدمة عملاء/مدير.
@@ -352,8 +360,10 @@ async function refreshCatalog() {
       } else {
         pricesPart = "السعر غير محدد";
       }
+      const img = (p.images && p.images[0] && p.images[0].src) || "";
       let line = `- ${name}${stock}: ${pricesPart}`;
       if (link) line += ` | الرابط: ${link}`;
+      if (img) line += ` | صورة: ${img}`;
       lines.push(line);
     }
     if (lines.length) {
@@ -467,6 +477,13 @@ function parseReply(raw) {
   const handoff = text.includes(HANDOFF_TAG);
   text = text.replace(HANDOFF_TAG, "").trim();
 
+  // صور المنتجات: [[IMG:url]] — نستخرجها ونتحقق إنها من موقع ليوا فقط
+  const images = [];
+  text = text.replace(/\[\[IMG:\s*(https?:\/\/[^\]\s]+?)\s*\]\]/g, (m, u) => {
+    if (/^https:\/\/liwadates\.com\/wp-content\//i.test(u) && !images.includes(u)) images.push(u);
+    return "";
+  }).trim();
+
   // تنظيف أي رموز ماركداون بتظهر وحشة في واتساب/ماسنجر
   text = text
     .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, "$1: $2") // روابط ماركداون → نص: رابط
@@ -476,13 +493,14 @@ function parseReply(raw) {
     .replace(/`/g, "")           // كود
     .trim();
 
-  // ماينفعش نبعت رسالة فاضية للعميل مع أوردر أو تحويل
+  // ماينفعش نبعت رسالة فاضية للعميل مع أوردر أو تحويل أو صورة
   if (!text) {
     if (order) text = "تم تسجيل طلبك 🌴 الفريق راح يتواصل معك لتأكيد التفاصيل والسعر النهائي. عساك بخير!";
     else if (handoff) text = "لحظات من فضلك — بحوّلك لأحد موظفينا وراح يساعدك حالاً 🙏";
+    else if (images.length) text = "تفضّل صورة المنتج 🌴";
   }
 
-  return { text, handoff, order };
+  return { text, handoff, order, images };
 }
 
 // ===== دالة تسأل OpenAI برسالة واحدة (تستخدمها قنوات ميتا) =====
@@ -552,6 +570,23 @@ async function sendMessenger(recipientId, text) {
   );
 }
 
+// إرسال صورة عبر ماسنجر/انستجرام
+async function sendMessengerImage(recipientId, url) {
+  try {
+    await fetch(
+      `https://graph.facebook.com/v21.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          recipient: { id: recipientId },
+          message: { attachment: { type: "image", payload: { url, is_reusable: true } } },
+        }),
+      }
+    );
+  } catch (e) { console.error("sendMessengerImage failed:", e); }
+}
+
 // ===== تسليم المحادثة لموظف بشري في فيسبوك/انستجرام (Handover Protocol) =====
 // بينقل المحادثة لـ Page Inbox عشان تظهر لموظف في Meta Business Suite ويرد بنفسه.
 // شرط: لازم تفعّل Handover Protocol في إعدادات الـ App وتخلي "Page Inbox" هو الـ Secondary Receiver.
@@ -591,6 +626,28 @@ async function sendWhatsApp(to, text) {
       }),
     }
   );
+}
+
+// إرسال صورة عبر واتساب
+async function sendWhatsAppImage(to, url) {
+  try {
+    await fetch(
+      `https://graph.facebook.com/v21.0/${WHATSAPP_PHONE_ID}/messages`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${WHATSAPP_TOKEN}`,
+        },
+        body: JSON.stringify({
+          messaging_product: "whatsapp",
+          to,
+          type: "image",
+          image: { link: url },
+        }),
+      }
+    );
+  } catch (e) { console.error("sendWhatsAppImage failed:", e); }
 }
 
 // ===== 1) فحص الـ Webhook (ميتا بتعمله مرة عند الربط) =====
@@ -633,6 +690,7 @@ app.post("/webhook", async (req, res) => {
 
             const reply = await askAI(event.message.text);
             await sendMessenger(senderId, reply.text);
+            if (reply.images) for (const u of reply.images) await sendMessengerImage(senderId, u);
             if (reply.order) {
               const channel = body.object === "instagram" ? "انستجرام" : "فيسبوك";
               await notifyOwner(
@@ -671,6 +729,7 @@ app.post("/webhook", async (req, res) => {
 
               const reply = await askAI(msg.text.body);
               await sendWhatsApp(from, reply.text);
+              if (reply.images) for (const u of reply.images) await sendWhatsAppImage(from, u);
               if (reply.order) {
                 await notifyOwner(
                   `🌴 أوردر جديد — واتساب\n\n${reply.order}\n\nرقم العميل: ${from}`
@@ -815,6 +874,15 @@ const CHAT_PAGE = `<!DOCTYPE html>
     bub.appendChild(tm); d.appendChild(bub); chat.appendChild(d);
     window.scrollTo(0, document.body.scrollHeight);
   }
+  function renderImage(url){
+    var d=document.createElement("div"); d.className="msg bot";
+    var bub=document.createElement("div"); bub.className="bubble"; bub.style.padding="6px";
+    var a=document.createElement("a"); a.href=url; a.target="_blank"; a.rel="noopener";
+    var im=document.createElement("img"); im.src=url; im.alt="صورة المنتج"; im.loading="lazy";
+    im.style.maxWidth="230px"; im.style.width="100%"; im.style.borderRadius="12px"; im.style.display="block";
+    a.appendChild(im); bub.appendChild(a); d.appendChild(bub); chat.appendChild(d);
+    window.scrollTo(0,document.body.scrollHeight);
+  }
   function note(t){ var d=document.createElement("div"); d.className="note"; var s=document.createElement("span"); s.textContent=t; d.appendChild(s); chat.appendChild(d); window.scrollTo(0,document.body.scrollHeight); }
   function orderBox(t){ var d=document.createElement("div"); d.className="order"; var s=document.createElement("span"); s.textContent="🔔 تنبيه أوردر لصاحب المتجر:\\n"+t; d.appendChild(s); chat.appendChild(d); }
 
@@ -828,7 +896,7 @@ const CHAT_PAGE = `<!DOCTYPE html>
 
   // استرجاع الجلسة السابقة
   convo = load();
-  if(convo.length){ for(var i=0;i<convo.length;i++){ render(convo[i].role==="user"?"user":"bot", convo[i].content); } }
+  if(convo.length){ for(var i=0;i<convo.length;i++){ var m=convo[i]; render(m.role==="user"?"user":"bot", m.content); if(m.images && m.images.length){ m.images.forEach(renderImage); } } }
   else { render("bot","هلا والله! حيّاك الله في تمور ليوا 🌴 كيف أقدر أخدمك اليوم؟"); }
 
   async function go(){
@@ -845,7 +913,10 @@ const CHAT_PAGE = `<!DOCTYPE html>
       var data = await r.json();
       hideTyping();
       var reply = data.reply || data.text || "(مافيش رد)";
-      render("bot", reply); convo.push({role:"assistant", content:reply}); save();
+      render("bot", reply);
+      var imgs = (data.images && data.images.length) ? data.images : null;
+      if(imgs){ imgs.forEach(renderImage); }
+      convo.push({role:"assistant", content:reply, images:imgs}); save();
       if(data.order) orderBox(data.order);
       if(data.handoff) note("تم تحويل المحادثة لموظف بشري");
     }catch(e){ hideTyping(); render("bot","معلش، صار خطأ في الاتصال. جرّب مرة ثانية."); }

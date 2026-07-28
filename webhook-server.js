@@ -314,6 +314,7 @@ ${"[[HANDOFF]]"}
 const STORE_API = "https://liwadates.com/wp-json/wc/store/v1/products";
 let liveCatalog = "";            // نص الكتالوج المحدّث من الموقع
 let liveCatalogUpdatedAt = null; // آخر وقت تحديث
+let productImages = [];          // [{core, img}] لمطابقة اسم المنتج بصورته (بيع بالصورة تلقائي)
 
 function hasArabic(s) { return /[؀-ۿ]/.test(s || ""); }
 function fmtMoney(minor) { return (Number(minor) / 100).toFixed(2); }
@@ -344,6 +345,7 @@ async function refreshCatalog() {
     }
     const lines = [];
     const seen = new Set();
+    const imgs = [];
     for (const p of products) {
       const name = (p.name || "").trim();
       if (!name || !hasArabic(name) || seen.has(name)) continue; // الأسماء العربية بدون تكرار
@@ -372,9 +374,14 @@ async function refreshCatalog() {
       if (link) line += ` | الرابط: ${link}`;
       if (img) line += ` | صورة: ${img}`;
       lines.push(line);
+      if (img) {
+        const core = name.replace(/^تمر\s+/, "").trim();
+        if (core.length >= 4) imgs.push({ core, img });
+      }
     }
     if (lines.length) {
       liveCatalog = lines.join("\n");
+      productImages = imgs.sort((a, b) => b.core.length - a.core.length); // الأطول أول (الأكثر تحديدًا)
       liveCatalogUpdatedAt = new Date();
       console.log(`Catalog refreshed: ${lines.length} products @ ${liveCatalogUpdatedAt.toISOString()}`);
     }
@@ -471,6 +478,18 @@ async function openaiReply(history) {
   return null;
 }
 
+// بيع بالصورة تلقائي: لو الرد بيرشّح منتج بالاسم ومحطّش صورة، نرفق صورته من الكتالوج
+const RECOMMEND_HINT = /أنصح|انصح|أرشّح|ارشح|اقترح|أقترح|ننصح|نرشّح|الأفضل|الانسب|الأنسب|الألذ|الالذ|ألذ|recommend|suggest|best choice|perfect for/i;
+function autoImagesFromReply(text, existing) {
+  if (existing && existing.length) return existing;              // الموديل حط صورة بالفعل
+  if (!text || !RECOMMEND_HINT.test(text)) return existing || []; // بس وقت الترشيح/البيع
+  if (!productImages || !productImages.length) return existing || [];
+  for (const p of productImages) {                               // الأطول أول = الأكثر تحديدًا
+    if (p.core && text.includes(p.core)) return [p.img];         // أول (أدق) تطابق، صورة واحدة
+  }
+  return existing || [];
+}
+
 // يفصل علامات الأوردر والتحويل عن الرد اللي بيروح للعميل
 function parseReply(raw) {
   let text = raw || "";
@@ -507,7 +526,10 @@ function parseReply(raw) {
     else if (images.length) text = "تفضّل صورة المنتج 🌴";
   }
 
-  return { text, handoff, order, images };
+  // بيع بالصورة تلقائي (لو الموديل ماحطش صورة بس بيرشّح منتج بالاسم)
+  const finalImages = autoImagesFromReply(text, images);
+
+  return { text, handoff, order, images: finalImages };
 }
 
 // ===== دالة تسأل OpenAI برسالة واحدة (تستخدمها قنوات ميتا) =====

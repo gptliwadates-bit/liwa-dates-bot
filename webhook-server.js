@@ -425,6 +425,20 @@ app.get("/release", (req, res) => {
   res.send("المحادثة مش متحوّلة أصلاً أو الـ id غلط.");
 });
 
+// ===== نقطة تجربة: جرّب رد الوكيل من المتصفح =====
+// مثال: https://<your-server>/test?key=liwa2026&msg=بكم المجدول؟
+// محمية بمفتاح بسيط (نفس META_VERIFY_TOKEN) عشان محدش يستهلك رصيدك.
+// ملاحظة: احذف الباب ده بعد ما تخلص تجربة لو حابب.
+app.get("/test", async (req, res) => {
+  if (req.query.key !== META_VERIFY_TOKEN) {
+    return res.status(403).send("forbidden — add ?key=YOUR_VERIFY_TOKEN");
+  }
+  const msg = req.query.msg;
+  if (!msg) return res.send("ابعت رسالة: /test?key=...&msg=رسالتك");
+  const reply = await askAI(String(msg));
+  res.json({ customer_message: msg, bot_reply: reply.text, handoff: reply.handoff, order: reply.order });
+});
+
 // ===== تشغيل السيرفر =====
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Liwa Dates bot running on port ${PORT}`));

@@ -554,7 +554,8 @@ async function refreshCatalog() {
       parentInfo[p.id] = { name, img, link };
       if (img) {
         const core = name.replace(/^تمر\s+/, "").trim();
-        if (core.length >= 4) imgs.push({ core, img, link, primary: true }); // منتج أساسي
+        // line = خط المنتج (الأب) — كل متغيّرات نفس المنتج بتشاركه عشان مانطلعش صورتين لنفس المنتج
+        if (core.length >= 4) imgs.push({ core, img, link, primary: true, line: core }); // منتج أساسي
       }
     }
     // صور المتغيرات (النكهات) — لو المتغير له صورة خاصة مختلفة عن الأب، نضيفها بنكهتها
@@ -569,7 +570,8 @@ async function refreshCatalog() {
       const core = `${base} ${flavor}`.trim();        // مثال: "كرانشلي مكاديميا"
       const vlink = par ? par.link : (v.permalink || "");
       // نضيف كل نكهة بصورتها الخاصة (حتى لو نفس صورة الأب) — النكهة هي الكلمة المميّزة للمطابقة
-      if (core.length >= 4) imgs.push({ core, img: vimg, link: vlink, primary: false }); // نكهة/متغيّر
+      // line = اسم الأب عشان كل النكهات/المقاسات تتجمّع تحت نفس خط المنتج
+      if (core.length >= 4) imgs.push({ core, img: vimg, link: vlink, primary: false, line: base }); // نكهة/متغيّر
     }
     if (lines.length) {
       liveCatalog = lines.join("\n");
@@ -763,56 +765,61 @@ function distinctiveTokens(core) {
 // مطابقة صور المنتجات من الكتالوج بناءً على الكلمات المميّزة في نص الرد.
 // بيرجّع صور **كل** المنتجات اللي اتذكرت بوضوح (يدعم أكتر من نوع)، وبيتجنّب التخمين لما الطلب عام.
 // منتج بيتحدد لو: (أ) طابق كلمة فريدة ليه (df==1، زي "مكاديميا")، أو (ب) كان الفائز الوحيد بأعلى نقاط.
+// المبدأ: كل صورة ليها "line" = خط المنتج (الأب). القاعدة الذهبية: **صورة واحدة كحد أقصى لكل خط منتج**.
+// لو العميل حدّد نكهة/مقاس بكلمة مميّزة (زي "مكاديميا") ناخد صورتها بالضبط ونقفل الخط —
+// فمانطلعش صورة نكهة تانية من نفس المنتج (ده سبب "صور المنتجات الغلط").
 function deterministicImages(text, lenient) {
   if (!text || !productImages || !productImages.length) return [];
   const t = normAr(text);
-  const prods = productImages.map((p) => ({ p, toks: distinctiveTokens(p.core) }));
+  const LINE_GENERIC = new Set(["فاخر", "فاخره"]); // كلمات عامة مش بتحدّد خط منتج
+  const prods = productImages.map((p) => ({ p, toks: distinctiveTokens(p.core), line: p.line || p.core }));
   const df = {};
   for (const { toks } of prods) for (const w of new Set(toks)) df[w] = (df[w] || 0) + 1;
   const scored = prods
-    .map(({ p, toks }) => ({ p, matched: toks.filter((w) => t.includes(w)), tokCount: toks.length }))
+    .map((x) => ({ p: x.p, line: x.line, matched: x.toks.filter((w) => t.includes(w)) }))
     .filter((x) => x.matched.length);
   if (!scored.length) return [];
   const cap = lenient ? 5 : 3;
-  const out = [], seen = new Set();
-  // 1) أي منتج طابق كلمة **فريدة** ليه (df==1) → مؤكد (يدعم أكتر من منتج)
-  for (const s of scored) {
-    if (s.matched.some((w) => df[w] === 1) && !seen.has(s.p.img)) { out.push(s.p); seen.add(s.p.img); }
+  const out = [], seen = new Set(), coveredLines = new Set();
+
+  // 1) تطابق مؤكّد: منتج طابق كلمة **فريدة** ليه (df==1، زي "مكاديميا" أو مقاس مميّز).
+  //    الأكتر تطابقًا الأول عشان المتغيّر الأخص يكسب جوّه نفس الخط، وبعد كده نقفل الخط.
+  const uniques = scored
+    .filter((s) => s.matched.some((w) => df[w] === 1))
+    .sort((a, b) => b.matched.length - a.matched.length);
+  for (const s of uniques) {
+    if (coveredLines.has(s.line) || seen.has(s.p.img)) continue;
+    out.push(s.p); seen.add(s.p.img); coveredLines.add(s.line);
     if (out.length >= cap) return out;
   }
+
   if (!lenient) {
     if (out.length) return out;
-    // مفيش كلمة فريدة → نختار منتج واحد بحذر (فائز وحيد أو أساسي وحيد)
+    // مفيش كلمة فريدة → نختار منتج واحد بحذر: لازم كل الفائزين يكونوا من **نفس الخط**.
     const bestScore = scored.reduce((m, s) => Math.max(m, s.matched.length), 0);
     const top = scored.filter((s) => s.matched.length === bestScore);
-    if (top.length === 1) return [top[0].p];
-    const prims = top.filter((s) => s.p.primary);
-    if (prims.length) {
-      const minTok = Math.min(...prims.map((s) => s.tokCount));
-      const base = prims.filter((s) => s.tokCount === minTok);
-      if (base.length === 1) return [base[0].p];
-    }
-    return [];
+    const lines = new Set(top.map((s) => s.line));
+    if (lines.size !== 1) return []; // منتجات مختلفة اتلغبطت → ماتخمّنش
+    const prim = top.find((s) => s.p.primary) || top.slice().sort((a, b) => a.p.core.length - b.p.core.length)[0];
+    return prim ? [prim.p] : [];
   }
-  // الوضع الصريح (العميل طالب صور): نضيف صورة **ممثّلة واحدة لكل خط منتج** مذكور.
-  // مفتاح الخط = أندر كلمة مطابقة **مميّزة** (نستبعد الكلمات العامة زي "فاخر" اللي بتظهر في كل المنتجات
-  // عشان مانضيفش منتج عشوائي لمجرد إن الرد فيه كلمة "فاخر").
-  const LINE_GENERIC = new Set(["فاخر", "فاخره"]);
+
+  // الوضع الصريح (العميل طالب صور): صورة ممثّلة واحدة لكل **خط منتج** لسه ماتغطّاش.
   const groups = {};
   for (const s of scored) {
-    const lineToks = s.matched.filter((w) => !LINE_GENERIC.has(w));
-    if (!lineToks.length) continue; // مفيش كلمة مميّزة كفاية لتكوين خط → تجاهل المنتج
-    const lineKey = lineToks.slice().sort((a, b) => df[a] - df[b])[0];
-    (groups[lineKey] = groups[lineKey] || []).push(s);
+    if (coveredLines.has(s.line)) continue;                 // الخط اتغطّى بنكهة مميّزة فوق
+    const distinctive = s.matched.filter((w) => !LINE_GENERIC.has(w));
+    if (!distinctive.length) continue;                      // مطابقة بكلمة عامة بس (فاخر) → تجاهل
+    (groups[s.line] = groups[s.line] || []).push(s);
   }
   for (const key of Object.keys(groups)) {
-    const g = groups[key];
-    if (g.some((s) => seen.has(s.p.img))) continue; // اتضاف قبل كده (كلمة فريدة)
-    const prims = g.filter((s) => s.p.primary);
-    const pool = (prims.length ? prims : g).slice().sort((a, b) => a.tokCount - b.tokCount || a.p.core.length - b.p.core.length);
-    const pick = pool[0];
-    if (pick && !seen.has(pick.p.img)) { out.push(pick.p); seen.add(pick.p.img); }
     if (out.length >= cap) break;
+    const g = groups[key];
+    if (g.some((s) => seen.has(s.p.img))) continue;
+    const prims = g.filter((s) => s.p.primary);
+    const pool = (prims.length ? prims : g).slice().sort((a, b) => a.p.core.length - b.p.core.length);
+    const pick = pool[0];
+    if (pick && !seen.has(pick.p.img)) { out.push(pick.p); seen.add(pick.p.img); coveredLines.add(key); }
   }
   return out.slice(0, cap);
 }

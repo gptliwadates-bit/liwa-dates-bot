@@ -64,6 +64,14 @@ const HANDOFF_KEYWORDS = [
   "شكوى", "اشتكي", "مدير", "human", "agent", "representative", "complaint", "speak to someone",
 ];
 
+// إشارات تحويل حتمية: لو الرد وجّه العميل لقسم الشكاوى أو وعده بتحويل، نفعّل التحويل فعليًا
+// حتى لو الموديل نسي علامة [[HANDOFF]] (بيحصل في الشكاوى/الإلغاء/الاسترجاع). رقم الشكاوى مخصص للتصعيد.
+const ESCALATION_SIGNALS = [
+  /505270251/,                                   // رقم الشكاوى والاستفسارات المخصص للتصعيد
+  /فريق الشكاوى|قسم الشكاوى|الشكاوى والاستفسارات/,
+  /بحوّ?لك|أحوّ?لك|راح أحوّ?ل|بأحوّ?ل|هحوّ?لك/,     // وعد صريح بالتحويل
+];
+
 // الـ App ID الرسمي لـ "Page Inbox" في ميتا — بنسلّم له المحادثة عشان تظهر لموظف بشري في Business Suite.
 const PAGE_INBOX_APP_ID = "263902037430900";
 
@@ -827,7 +835,7 @@ function parseReply(raw, source) {
     order = text.slice(oStart + ORDER_OPEN.length).trim() || "(بلوك أوردر غير مكتمل — راجع المحادثة)";
     text = text.slice(0, oStart).trim();
   }
-  const handoff = text.includes(HANDOFF_TAG);
+  let handoff = text.includes(HANDOFF_TAG);
   text = text.replace(HANDOFF_TAG, "").trim();
 
   // صور المنتجات: [[IMG:url]] — نستخرجها ونتحقق إنها من موقع ليوا فقط
@@ -853,6 +861,9 @@ function parseReply(raw, source) {
     .replace(/\[\[\s*IMG\s*:[^\]]*\]?\]?/gi, "") // كامل أو مقطوع
     .replace(/\[\[[^\]]*$/g, "")                 // أي علامة مفتوحة اتقصّت في الآخر
     .replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+
+  // شبكة أمان للتحويل: لو الرد وجّه لقسم الشكاوى أو وعد بتحويل بدون علامة [[HANDOFF]]، نفعّله فعليًا
+  if (!handoff && ESCALATION_SIGNALS.some((re) => re.test(text))) handoff = true;
 
   // UTM: أي لينك لموقع ليوا يطلع للعميل نحط عليه تتبّع (حسب القناة)
   text = utmizeText(text, source);

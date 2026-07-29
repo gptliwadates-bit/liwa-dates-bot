@@ -337,13 +337,41 @@ ${"[[HANDOFF]]"}
 
 // ===== كتالوج حيّ يتحدّث تلقائيًا من موقع liwadates.com =====
 const STORE_API = "https://liwadates.com/wp-json/wc/store/v1/products";
+// فيد البوت الرسمي (أسعار شاملة الضريبة — هو المصدر المعتمد للأسعار)
+const FEED_URL = "https://liwadates.com/wp-content/uploads/wpwoof-feed/xml/bot.xml";
 let liveCatalog = "";            // نص الكتالوج المحدّث من الموقع
 let liveCatalogUpdatedAt = null; // آخر وقت تحديث
 let productImages = [];          // [{core, img}] لمطابقة اسم المنتج بصورته (بيع بالصورة تلقائي)
 let bestSellers = [];            // الأكثر مبيعًا (أسماء) — من ترتيب popularity، بدون مواد التعبئة
+let feedPrices = {};             // id (منتج/متغيّر) -> السعر من الفيد (شامل الضريبة)
 
 function hasArabic(s) { return /[؀-ۿ]/.test(s || ""); }
 function fmtMoney(minor) { return (Number(minor) / 100).toFixed(2); }
+
+// نجيب أسعار الفيد الرسمية (شاملة الضريبة) ونطابقها بالـ id مع منتجات الموقع
+async function refreshFeedPrices() {
+  try {
+    const res = await fetch(FEED_URL);
+    if (!res.ok) return;
+    const xml = await res.text();
+    const map = {};
+    for (const raw of xml.split("<item>").slice(1)) {
+      const b = raw.split("</item>")[0];
+      const idM = b.match(/<g:id>([\s\S]*?)<\/g:id>/);
+      const pM = b.match(/<g:price>([\s\S]*?)<\/g:price>/);
+      if (!idM || !pM) continue;
+      const id = idM[1].replace(/<!\[CDATA\[|\]\]>/g, "").replace(/[^0-9]/g, "");
+      const price = parseFloat(pM[1].replace(/<!\[CDATA\[|\]\]>/g, "").replace(/[^0-9.]/g, ""));
+      if (id && price) map[id] = price;
+    }
+    if (Object.keys(map).length) { feedPrices = map; console.log(`Feed prices loaded: ${Object.keys(map).length}`); }
+  } catch (e) { console.error("refreshFeedPrices failed:", e); }
+}
+// سعر المنتج/المتغيّر: من الفيد أولاً (المعتمد)، وإلا من الموقع
+function priceFor(id, storeMinor) {
+  if (id != null && feedPrices[String(id)] != null) return feedPrices[String(id)].toFixed(2);
+  return storeMinor != null ? fmtMoney(storeMinor) : null;
+}
 
 async function fetchAllPages(url) {
   let all = [];
@@ -361,6 +389,7 @@ async function fetchAllPages(url) {
 
 async function refreshCatalog() {
   try {
+    await refreshFeedPrices(); // أسعار الفيد المعتمدة (شاملة الضريبة) قبل بناء الكتالوج
     const products = await fetchAllPages(STORE_API);
     const variations = await fetchAllPages(STORE_API + "?type=variation");
     if (products.length === 0) return;
@@ -382,19 +411,20 @@ async function refreshCatalog() {
       let pricesPart;
       const vars = byParent[p.id];
       if (vars && vars.length) {
-        // سعر لكل حجم على حدة
+        // سعر لكل حجم على حدة — من الفيد (شامل الضريبة) أولاً، وإلا من الموقع
         const parts = vars
-          .filter((v) => v.prices && v.prices.price)
           .map((v) => {
+            const pr = priceFor(v.id, v.prices && v.prices.price);
+            if (!pr) return null;
             let label = (v.variation || "").replace(/^[^:]*:\s*/, "").trim();
             if (!label) label = v.formatted_weight || "خيار";
-            return `${label} = ${fmtMoney(v.prices.price)} درهم`;
-          });
+            return `${label} = ${pr} درهم`;
+          })
+          .filter(Boolean);
         pricesPart = parts.length ? parts.join("، ") : "السعر غير محدد";
-      } else if (p.prices && p.prices.price) {
-        pricesPart = `${fmtMoney(p.prices.price)} درهم`;
       } else {
-        pricesPart = "السعر غير محدد";
+        const pr = priceFor(p.id, p.prices && p.prices.price);
+        pricesPart = pr ? `${pr} درهم` : "السعر غير محدد";
       }
       const img = (p.images && p.images[0] && p.images[0].src) || "";
       let line = `- ${name}${stock}: ${pricesPart}`;
@@ -507,8 +537,8 @@ function buildSystemPrompt() {
   if (!liveCatalog) return SYSTEM_PROMPT;
   let out =
     SYSTEM_PROMPT +
-    `\n\n## الكتالوج الحيّ (محدّث تلقائيًا من liwadates.com — لكل منتج سعر كل حجم بالضبط + رابطه)\n` +
-    `اعتمد على الأسعار دي فقط. اقتبس سعر الحجم اللي يطلبه العميل حرفيًا.\n` +
+    `\n\n## الكتالوج الحيّ (محدّث تلقائيًا — لكل منتج سعر كل حجم بالضبط + رابطه)\n` +
+    `الأسعار **شاملة الضريبة** ومن الفيد الرسمي للمتجر. اعتمد على الأسعار دي فقط. اقتبس سعر الحجم اللي يطلبه العميل حرفيًا.\n` +
     `**قاعدة اللينك (مهمة):** كل ما تتكلم عن منتج **معيّن** (سعره، تفاصيله، توفّره)، **لازم** تحط رابط المنتج من الكتالوج في ردّك عشان العميل يقدر يشوفه ويطلبه. لو بتعدّد أكتر من منتج، حط رابط كل واحد جنبه. (الصورة بتتبعت تلقائيًا مع المنتج، فمش لازم تكتب علامة صورة بنفسك.)\n` +
     `**مهم — عند السؤال عن "أنواع" منتج أو "كل أنواع X":** بعض المنتجات ليها أكتر من إدخال منفصل في الكتالوج بنفس الاسم. ` +
     `مثال: **كرانشلي** له 4 أنواع مش اتنين — كرانشلي بالمكاديميا، كرانشلي بالفستق، **كرانشلي السمسم**، و**كرانشلي الفول السوداني والكنافة**. ` +

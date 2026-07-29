@@ -382,10 +382,12 @@ async function refreshFeedPrices() {
     if (Object.keys(map).length) { feedPrices = map; console.log(`Feed prices loaded: ${Object.keys(map).length}`); }
   } catch (e) { console.error("refreshFeedPrices failed:", e); }
 }
-// سعر المنتج/المتغيّر: من الفيد أولاً (المعتمد)، وإلا من الموقع
+// ضريبة القيمة المضافة 5% — السعر النهائي شامل الضريبة (زي الفيد الرسمي واللي العميل بيدفعه)
+const VAT = 1.05;
+// سعر المنتج/المتغيّر: من الفيد أولاً لو اتحمّل، وإلا سعر الموقع + الضريبة (= نفس سعر الفيد بالظبط)
 function priceFor(id, storeMinor) {
   if (id != null && feedPrices[String(id)] != null) return feedPrices[String(id)].toFixed(2);
-  return storeMinor != null ? fmtMoney(storeMinor) : null;
+  return storeMinor != null ? ((Number(storeMinor) / 100) * VAT).toFixed(2) : null;
 }
 
 async function fetchAllPages(url) {

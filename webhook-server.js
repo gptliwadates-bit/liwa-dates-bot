@@ -28,7 +28,7 @@ const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const WHATSAPP_PHONE_ID = process.env.WHATSAPP_PHONE_ID;
 
-const AI_MODEL = "gpt-4o-mini"; // أرخص وأسرع. للجودة الأعلى استخدم "gpt-4o"
+const AI_MODEL = process.env.AI_MODEL || "gpt-4o"; // النموذج الأقوى (دقة والتزام أعلى). ممكن تغييره من متغير AI_MODEL
 
 // ===== إعدادات التحويل لموظف بشري (Human Handoff) =====
 // العلامة اللي كلود بيحطها في آخر رده لما يقرر إنه محتاج موظف بشري.

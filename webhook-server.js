@@ -531,9 +531,11 @@ function deterministicImage(text) {
   }
   return best ? [best.img] : [];
 }
+const IMG_INTENT = /صور[ةه]|بالصوره|picture|image|photo/i;
 function autoImagesFromReply(text, existing) {
   // نتجاهل رابط الصورة اللي حطه الموديل تمامًا (ممكن يكون غلط) ونعتمد على مطابقة السيرفر فقط.
-  const wantsImage = (existing && existing.length) || (text && RECOMMEND_HINT.test(text));
+  // نعرض صورة لما: الموديل حط علامة صورة، أو الرد نفسه فيه نية صورة ("تفضل صورة..")، أو وقت الترشيح/البيع.
+  const wantsImage = (existing && existing.length) || (text && (IMG_INTENT.test(text) || RECOMMEND_HINT.test(text)));
   if (!wantsImage) return [];
   return deterministicImage(text); // صورة مؤكدة أو لا شيء
 }

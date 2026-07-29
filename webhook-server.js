@@ -346,6 +346,7 @@ async function refreshCatalog() {
     const lines = [];
     const seen = new Set();
     const imgs = [];
+    const parentInfo = {};
     for (const p of products) {
       const name = (p.name || "").trim();
       if (!name || !hasArabic(name) || seen.has(name)) continue; // الأسماء العربية بدون تكرار
@@ -374,10 +375,24 @@ async function refreshCatalog() {
       if (link) line += ` | الرابط: ${link}`;
       if (img) line += ` | صورة: ${img}`;
       lines.push(line);
+      parentInfo[p.id] = { name, img };
       if (img) {
         const core = name.replace(/^تمر\s+/, "").trim();
         if (core.length >= 4) imgs.push({ core, img });
       }
+    }
+    // صور المتغيرات (النكهات) — لو المتغير له صورة خاصة مختلفة عن الأب، نضيفها بنكهتها
+    // عشان "كرانشلي مكاديميا" و"كرانشلي فستق" يطلعوا صور مختلفة صح
+    for (const v of variations) {
+      const vimg = (v.images && v.images[0] && v.images[0].src) || "";
+      if (!vimg) continue;
+      const par = parentInfo[v.parent];
+      if (par && vimg === par.img) continue;          // نفس صورة الأب → مالهاش لزمة
+      const flavor = (v.variation || "").replace(/^[^:]*:\s*/, "").trim();
+      if (!flavor) continue;
+      const base = (par ? par.name : (v.name || "")).replace(/^تمر\s+/, "").trim();
+      const core = `${base} ${flavor}`.trim();
+      if (core.length >= 4) imgs.push({ core, img: vimg });
     }
     if (lines.length) {
       liveCatalog = lines.join("\n");
@@ -482,10 +497,9 @@ async function openaiReply(history) {
 const RECOMMEND_HINT = /أنصح|انصح|أرشّح|ارشح|اقترح|أقترح|ننصح|نرشّح|نصيحت|الأفضل|الانسب|الأنسب|الألذ|الالذ|ألذ|مثالي|مناسب|خيار|خيارات|تختار|رائع|ممتاز|الأشهر|من أفضل|من افضل|recommend|suggest|best|perfect|ideal|great choice|option/i;
 // كلمات عامة مش مميّزة لمنتج معيّن (نتجاهلها في المطابقة)
 const IMG_STOPWORDS = new Set([
-  "تمر", "تمور", "رطب", "فاخر", "فاخره", "طازج", "طازه", "علبه", "كبير", "صغير", "وزن", "درهم",
+  "تمر", "تمور", "رطب", "فاخر", "فاخره", "طازج", "طازه", "علبه", "علبة", "كبير", "صغير", "وزن", "درهم",
   "مغلف", "ساده", "محشو", "محشي", "صندوق", "هدايا", "هديه", "صينيه", "رقائق", "ليوا", "مجموعه", "بوكس",
-  // أسماء الخطوط/البراندات المشتركة بين أكتر من منتج (لازم نتجاهلها عشان نطابق على نوع المنتج المميّز)
-  "كرانشلي", "كرنشلي", "crunchly", "معمول", "رهايف", "كنافه", "والكنافه",
+  "نوع", "الحشو", "حشو", "الحجم", "حجم",
 ]);
 function normAr(s) {
   return (s || "")
@@ -496,23 +510,32 @@ function normAr(s) {
 function distinctiveTokens(core) {
   return normAr(core).split(/\s+/).filter((w) => w.length >= 4 && !IMG_STOPWORDS.has(w));
 }
-// مطابقة صورة المنتج من الكتالوج بناءً على الكلمة المميّزة لنوع المنتج في نص الرد
+// مطابقة صورة المنتج من الكتالوج: نطابق على كلمات المنتج المميّزة في نص الرد.
+// نستخدم تكرار الكلمة عبر الكتالوج (df): لازم المنتج الفائز يطابق كلمة **فريدة** ليه (مش مشتركة زي "كرانشلي")،
+// عشان مايجيبش صورة نوع غلط. لو مفيش تطابق مؤكد، مايعرضش صورة أصلاً (أحسن من صورة غلط).
 function deterministicImage(text) {
   if (!text || !productImages || !productImages.length) return [];
   const t = normAr(text);
-  for (const p of productImages) {                               // الأطول أول = الأكثر تحديدًا
-    const toks = distinctiveTokens(p.core);
-    if (toks.length && toks.some((w) => t.includes(w))) return [p.img];
+  const prods = productImages.map((p) => ({ p, toks: distinctiveTokens(p.core) }));
+  const df = {};
+  for (const { toks } of prods) for (const w of new Set(toks)) df[w] = (df[w] || 0) + 1;
+  let best = null, bestScore = 0;
+  for (const { p, toks } of prods) {
+    const matched = toks.filter((w) => t.includes(w));
+    if (!matched.length) continue;
+    if (!matched.some((w) => df[w] === 1)) continue;             // لازم كلمة فريدة للمنتج ده
+    const score = matched.length;
+    if (score > bestScore || (score === bestScore && best && p.core.length > best.core.length)) {
+      best = p; bestScore = score;
+    }
   }
-  return [];
+  return best ? [best.img] : [];
 }
 function autoImagesFromReply(text, existing) {
-  const det = deterministicImage(text);
-  // لو الموديل حط صورة، نصحّحها بالمطابقة الأدق (عشان مايجيبش صورة منتج غلط)
-  if (existing && existing.length) return det.length ? det : existing;
-  // الموديل ماحطش صورة: نعرض تلقائيًا بس وقت الترشيح/البيع
-  if (text && RECOMMEND_HINT.test(text) && det.length) return det;
-  return existing || [];
+  // نتجاهل رابط الصورة اللي حطه الموديل تمامًا (ممكن يكون غلط) ونعتمد على مطابقة السيرفر فقط.
+  const wantsImage = (existing && existing.length) || (text && RECOMMEND_HINT.test(text));
+  if (!wantsImage) return [];
+  return deterministicImage(text); // صورة مؤكدة أو لا شيء
 }
 
 // UTM: نضيف باراميترات تتبّع على أي لينك لموقع ليوا يطلع للعميل — عشان نعرف الزيارة جاية من البوت وقناته

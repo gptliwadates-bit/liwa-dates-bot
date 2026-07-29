@@ -401,10 +401,10 @@ async function refreshCatalog() {
       if (link) line += ` | الرابط: ${link}`;
       if (img) line += ` | صورة: ${img}`;
       lines.push(line);
-      parentInfo[p.id] = { name, img };
+      parentInfo[p.id] = { name, img, link };
       if (img) {
         const core = name.replace(/^تمر\s+/, "").trim();
-        if (core.length >= 4) imgs.push({ core, img, primary: true }); // منتج أساسي
+        if (core.length >= 4) imgs.push({ core, img, link, primary: true }); // منتج أساسي
       }
     }
     // صور المتغيرات (النكهات) — لو المتغير له صورة خاصة مختلفة عن الأب، نضيفها بنكهتها
@@ -417,8 +417,9 @@ async function refreshCatalog() {
       const par = parentInfo[v.parent];
       const base = (par ? par.name : (v.name || "")).replace(/^تمر\s+/, "").trim();
       const core = `${base} ${flavor}`.trim();        // مثال: "كرانشلي مكاديميا"
+      const vlink = par ? par.link : (v.permalink || "");
       // نضيف كل نكهة بصورتها الخاصة (حتى لو نفس صورة الأب) — النكهة هي الكلمة المميّزة للمطابقة
-      if (core.length >= 4) imgs.push({ core, img: vimg, primary: false }); // نكهة/متغيّر
+      if (core.length >= 4) imgs.push({ core, img: vimg, link: vlink, primary: false }); // نكهة/متغيّر
     }
     if (lines.length) {
       liveCatalog = lines.join("\n");
@@ -587,36 +588,32 @@ function deterministicImages(text) {
   const out = [], seen = new Set();
   // 1) أي منتج طابق كلمة **فريدة** ليه (df==1) → مؤكد (يدعم أكتر من منتج)
   for (const s of scored) {
-    if (s.matched.some((w) => df[w] === 1) && !seen.has(s.p.img)) { out.push(s.p.img); seen.add(s.p.img); }
+    if (s.matched.some((w) => df[w] === 1) && !seen.has(s.p.img)) { out.push(s.p); seen.add(s.p.img); }
     if (out.length >= 3) return out;
   }
   if (out.length) return out;
   // 2) مفيش كلمة فريدة → نختار من المنتجات صاحبة أعلى نقاط
   const top = scored.filter((s) => s.matched.length === bestScore);
-  if (top.length === 1) return [top[0].p.img];             // فائز وحيد
+  if (top.length === 1) return [top[0].p];                 // فائز وحيد
   // تعادل: نفضّل **المنتج الأساسي الأقل كلمات** (الأساسي/العام مش المحشو/المخصص) لو واضح
   const prims = top.filter((s) => s.p.primary);
   if (prims.length) {
     const minTok = Math.min(...prims.map((s) => s.tokCount));
     const base = prims.filter((s) => s.tokCount === minTok);
-    if (base.length === 1) return [base[0].p.img];
+    if (base.length === 1) return [base[0].p];
   }
-  return [];                                                // غامض → مفيش صورة (أحسن من صورة غلط)
+  return [];                                                // غامض → مفيش (أحسن من غلط)
 }
-const IMG_INTENT = /صور[ةه]|بالصوره|picture|image|photo/i;
-const PRODUCT_LINK = /liwadates\.com\/(?:[a-z]{2}\/)?product\//i; // رابط منتج معيّن في الرد
-function autoImagesFromReply(text, existing) {
-  // نتجاهل رابط الصورة اللي حطه الموديل تمامًا (ممكن يكون غلط) ونعتمد على مطابقة السيرفر فقط.
+const IMG_INTENT = /صور[ةه]?|بالصوره|picture|image|photo/i; // صورة/صوره/صور (مفرد وجمع)
+// بيرجّع منتجات الرد (صورة + رابط) عشان نرفقهم تلقائيًا. حتمي 100% مش معتمد على الموديل.
+function autoProductEntries(text, existing) {
   if (!text) return [];
-  const explicit = (existing && existing.length) || IMG_INTENT.test(text); // العميل طلب صورة صراحةً
-  // نعرض صورة كمان لو الرد بيعرض منتج معيّن (فيه رابط منتج) أو وقت الترشيح/البيع
-  const wantsImage = explicit || PRODUCT_LINK.test(text) || RECOMMEND_HINT.test(text);
-  if (!wantsImage) return [];
-  const imgs = deterministicImages(text);
-  // طلب صورة صريح → اعرض كل المطابق (حتى نوعين/تلاتة).
-  // غير كده (عرض منتج/ترشيح) → اعرض بس لو منتج **واحد** مركّز، مش قائمة طويلة (عشان مايغرقش العميل ولا يظهر صور في التعداد).
-  if (explicit) return imgs;
-  return imgs.length === 1 ? imgs : [];
+  const matches = deterministicImages(text); // منتجات متطابقة بثقة (كل واحد {img, link})
+  const explicit = (existing && existing.length) || IMG_INTENT.test(text); // طلب صورة صريح
+  // طلب صورة صريح → كل المطابق (حتى نوعين/تلاتة).
+  // غير كده → بس لو الرد بيتكلم عن منتج **واحد** محدّد (نرفق صورته ولينكه)، مش قائمة (عشان مايغرقش العميل).
+  if (explicit) return matches;
+  return matches.length === 1 ? matches : [];
 }
 
 // UTM: نضيف باراميترات تتبّع على أي لينك لموقع ليوا يطلع للعميل — عشان نعرف الزيارة جاية من البوت وقناته
@@ -677,8 +674,14 @@ function parseReply(raw, source) {
     else if (images.length) text = "تفضّل صورة المنتج 🌴";
   }
 
-  // بيع بالصورة تلقائي (لو الموديل ماحطش صورة بس بيرشّح منتج بالاسم)
-  const finalImages = autoImagesFromReply(text, images);
+  // المنتجات اللي الرد بيتكلم عنها → نرفق صورها ولينكاتها تلقائيًا (حتمي، مش معتمد على الموديل)
+  const entries = autoProductEntries(text, images);
+  const finalImages = entries.map((e) => e.img).filter(Boolean);
+  // لو الرد بيتكلم عن منتج واحد محدّد وماحطّش لينكه، نلحق اللينك (بالـ UTM) في آخر الرد
+  if (entries.length === 1 && entries[0].link) {
+    const base = entries[0].link.split("?")[0];
+    if (text.indexOf(base) === -1) text += `\n${addUtm(entries[0].link, source)}`;
+  }
 
   return { text, handoff, order, images: finalImages };
 }

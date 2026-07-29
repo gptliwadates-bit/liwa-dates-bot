@@ -339,6 +339,12 @@ ${"[[HANDOFF]]"}
 const STORE_API = "https://liwadates.com/wp-json/wc/store/v1/products";
 // فيد البوت الرسمي (أسعار شاملة الضريبة — هو المصدر المعتمد للأسعار)
 const FEED_URL = "https://liwadates.com/wp-content/uploads/wpwoof-feed/xml/bot.xml";
+// هيدرز زي المتصفح — عشان نعدّي من حماية Cloudflare (اللي بتحجب طلبات السيرفر)
+const BROWSER_HEADERS = {
+  "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "accept-language": "ar,en;q=0.9",
+};
 let liveCatalog = "";            // نص الكتالوج المحدّث من الموقع
 let liveCatalogUpdatedAt = null; // آخر وقت تحديث
 let productImages = [];          // [{core, img}] لمطابقة اسم المنتج بصورته (بيع بالصورة تلقائي)
@@ -351,8 +357,8 @@ function fmtMoney(minor) { return (Number(minor) / 100).toFixed(2); }
 // نجيب أسعار الفيد الرسمية (شاملة الضريبة) ونطابقها بالـ id مع منتجات الموقع
 async function refreshFeedPrices() {
   try {
-    const res = await fetch(FEED_URL);
-    if (!res.ok) return;
+    const res = await fetch(FEED_URL, { headers: BROWSER_HEADERS });
+    if (!res.ok) { console.error("feed fetch status:", res.status); return; }
     // الفيد مضغوط بـ Brotli/gzip — لو fetch مافكّش الضغط، نفكّه يدويًا
     let buf = Buffer.from(await res.arrayBuffer());
     let xml = buf.toString("utf8");
@@ -1299,7 +1305,7 @@ app.get("/feeddebug", async (req, res) => {
   if (req.query.key !== META_VERIFY_TOKEN) return res.status(403).json({ error: "forbidden" });
   const info = {};
   try {
-    const r = await fetch(FEED_URL);
+    const r = await fetch(FEED_URL, { headers: BROWSER_HEADERS });
     info.status = r.status;
     info.contentEncoding = r.headers.get("content-encoding");
     info.contentType = r.headers.get("content-type");

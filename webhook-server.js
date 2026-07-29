@@ -506,8 +506,27 @@ function autoImagesFromReply(text, existing) {
   return existing || [];
 }
 
+// UTM: نضيف باراميترات تتبّع على أي لينك لموقع ليوا يطلع للعميل — عشان نعرف الزيارة جاية من البوت وقناته
+function addUtm(url, source) {
+  try {
+    if (/\.(webp|jpe?g|png|gif|svg)(\?|#|$)/i.test(url)) return url; // ماتعدلش على الصور
+    if (/[?&]utm_source=/i.test(url)) return url;                    // متكررش لو فيه utm
+    const sep = url.includes("?") ? "&" : "?";
+    return `${url}${sep}utm_source=${encodeURIComponent(source || "chatbot")}&utm_medium=ai_agent&utm_campaign=liwa_chatbot`;
+  } catch (e) { return url; }
+}
+function utmizeText(text, source) {
+  if (!text) return text;
+  return text.replace(/https?:\/\/liwadates\.com\/[^\s<>"')]+/gi, (u) => {
+    let trail = "";
+    const m = u.match(/[.,،؛!؟)]+$/); // شيل علامات الترقيم في آخر اللينك ورجّعها بعد الـ utm
+    if (m) { trail = m[0]; u = u.slice(0, -trail.length); }
+    return addUtm(u, source) + trail;
+  });
+}
+
 // يفصل علامات الأوردر والتحويل عن الرد اللي بيروح للعميل
-function parseReply(raw) {
+function parseReply(raw, source) {
   let text = raw || "";
   let order = null;
   const oStart = text.indexOf(ORDER_OPEN);
@@ -535,6 +554,9 @@ function parseReply(raw) {
     .replace(/`/g, "")           // كود
     .trim();
 
+  // UTM: أي لينك لموقع ليوا يطلع للعميل نحط عليه تتبّع (حسب القناة)
+  text = utmizeText(text, source);
+
   // ماينفعش نبعت رسالة فاضية للعميل مع أوردر أو تحويل أو صورة
   if (!text) {
     if (order) text = "تم تسجيل طلبك 🌴 الفريق راح يتواصل معك لتأكيد التفاصيل والسعر النهائي. عساك بخير!";
@@ -549,11 +571,11 @@ function parseReply(raw) {
 }
 
 // ===== دالة تسأل OpenAI برسالة واحدة (تستخدمها قنوات ميتا) =====
-async function askAI(userMessage) {
+async function askAI(userMessage, source) {
   try {
     const raw = await openaiReply([{ role: "user", content: userMessage }]);
     if (raw === null) return { text: "معلش حصل خطأ بسيط، ممكن تبعت تاني؟", handoff: false, order: null };
-    return parseReply(raw);
+    return parseReply(raw, source);
   } catch (e) {
     console.error("askAI failed:", e);
     return { text: "معلش حصل خطأ بسيط، ممكن تبعت تاني؟", handoff: false, order: null };
@@ -754,7 +776,7 @@ app.post("/webhook", async (req, res) => {
               continue;
             }
 
-            const reply = await askAI(event.message.text);
+            const reply = await askAI(event.message.text, body.object === "instagram" ? "instagram" : "messenger");
             await sendMessenger(senderId, reply.text);
             if (reply.images) for (const u of reply.images) await sendMessengerImage(senderId, u);
             if (reply.order) {
@@ -793,7 +815,7 @@ app.post("/webhook", async (req, res) => {
                 continue;
               }
 
-              const reply = await askAI(msg.text.body);
+              const reply = await askAI(msg.text.body, "whatsapp");
               await sendWhatsApp(from, reply.text);
               if (reply.images) for (const u of reply.images) await sendWhatsAppImage(from, u);
               if (reply.order) {
@@ -840,7 +862,7 @@ app.get("/test", async (req, res) => {
   }
   const msg = req.query.msg;
   if (!msg) return res.send("ابعت رسالة: /test?key=...&msg=رسالتك");
-  const reply = await askAI(String(msg));
+  const reply = await askAI(String(msg), "test");
   res.json({ customer_message: msg, bot_reply: reply.text, handoff: reply.handoff, order: reply.order });
 });
 
@@ -860,7 +882,7 @@ app.post("/api/chat", async (req, res) => {
     const history = Array.isArray(req.body.messages) ? req.body.messages.slice(-20) : [];
     const raw = await openaiReply(history);
     if (raw === null) return res.json({ reply: "معلش حصل خطأ، جرّب تاني.", handoff: false, order: null });
-    const parsed = parseReply(raw);
+    const parsed = parseReply(raw, "webchat");
     // شبكة أمان: لو آخر رسالة عميل فيها إشارة شكوى/تصعيد، فعّل التحويل
     const lastUser = [...history].reverse().find((m) => m.role === "user");
     if (lastUser && needsEscalation(lastUser.content)) parsed.handoff = true;

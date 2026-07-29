@@ -799,34 +799,43 @@ function deterministicImages(text, lenient) {
 
   if (!lenient) {
     if (out.length) return out;
-    // مفيش كلمة فريدة → نختار منتج واحد بحذر: لازم كل الفائزين يكونوا من **نفس الخط**.
-    const bestScore = scored.reduce((m, s) => Math.max(m, s.matched.length), 0);
-    const top = scored.filter((s) => s.matched.length === bestScore);
-    const lines = new Set(top.map((s) => s.line));
-    if (lines.size !== 1) return []; // منتجات مختلفة اتلغبطت → ماتخمّنش
-    const prim = top.find((s) => s.p.primary) || top.slice().sort((a, b) => a.p.core.length - b.p.core.length)[0];
-    return prim ? [prim.p] : [];
+    // مفيش كلمة فريدة → نختار صورة واحدة بحذر: لازم كل الفائزين يكونوا من **نفس العائلة**
+    // (نفس رأس الكلمة المميّزة، زي "مجدول")، وإلا نسيبها من غير صورة عشان مانخمّنش غلط.
+    const distinctify = (s) => s.matched.filter((w) => !LINE_GENERIC.has(w));
+    const cand = scored.filter((s) => distinctify(s).length);
+    if (!cand.length) return [];
+    const bestScore = cand.reduce((m, s) => Math.max(m, distinctify(s).length), 0);
+    const top = cand.filter((s) => distinctify(s).length === bestScore);
+    const heads = new Set(top.map((s) => distinctify(s).slice().sort((a, b) => df[a] - df[b])[0]));
+    if (heads.size !== 1) return []; // منتجات مختلفة اتلغبطت → ماتخمّنش
+    const prims = top.filter((s) => s.p.primary);
+    const pool = (prims.length ? prims : top).slice().sort((a, b) => a.p.core.length - b.p.core.length);
+    return pool[0] ? [pool[0].p] : [];
   }
 
   // الوضع الصريح (العميل طالب صور): صورة ممثّلة واحدة لكل **خط منتج** لسه ماتغطّاش.
+  // مفتاح المجموعة = أندر كلمة مميّزة مطابقة ("رأس العائلة"، زي "مجدول" أو "خلاص").
+  // كل المنتجات اللي بتشارك نفس رأس العائلة (المنتج العادي + علب الهدايا + الضيافة) بتتجمّع
+  // في مجموعة واحدة ونطلّع صورة واحدة بس — عشان "صورة المجدول" ماتطلّعش 3 صور.
   const groups = {};
   for (const s of scored) {
     if (coveredLines.has(s.line)) continue;                 // الخط اتغطّى بنكهة مميّزة فوق
     const distinctive = s.matched.filter((w) => !LINE_GENERIC.has(w));
     if (!distinctive.length) continue;                      // مطابقة بكلمة عامة بس (فاخر) → تجاهل
-    // لو العميل حدّد نكهة مؤكّدة، مانضيفش خط تاني طابق **بس** كلمات عائلية مشتركة اتستهلكت
-    // (زي "كرانشلي" اللي بيتكرر في أكتر من منتج) — ده سبب طلوع صور منتجات غلط.
+    // لو العميل حدّد نكهة مؤكّدة، مانضيفش منتج تاني طابق **بس** كلمات عائلية مشتركة اتستهلكت
     if (hadExact && distinctive.every((w) => exactTokens.has(w))) continue;
-    (groups[s.line] = groups[s.line] || []).push(s);
+    const key = distinctive.slice().sort((a, b) => df[a] - df[b])[0];
+    (groups[key] = groups[key] || []).push(s);
   }
   for (const key of Object.keys(groups)) {
     if (out.length >= cap) break;
     const g = groups[key];
     if (g.some((s) => seen.has(s.p.img))) continue;
+    // نفضّل المنتج الأساسي الأبسط (أقصر اسم = المنتج العادي مش علبة الهدايا)
     const prims = g.filter((s) => s.p.primary);
     const pool = (prims.length ? prims : g).slice().sort((a, b) => a.p.core.length - b.p.core.length);
     const pick = pool[0];
-    if (pick && !seen.has(pick.p.img)) { out.push(pick.p); seen.add(pick.p.img); coveredLines.add(key); }
+    if (pick && !seen.has(pick.p.img)) { out.push(pick.p); seen.add(pick.p.img); }
   }
   return out.slice(0, cap);
 }

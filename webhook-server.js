@@ -555,7 +555,7 @@ const RECOMMEND_HINT = /أنصح|انصح|أرشّح|ارشح|اقترح|أقت�
 // كلمات عامة مش مميّزة لمنتج معيّن (نتجاهلها في المطابقة)
 const IMG_STOPWORDS = new Set([
   "تمر", "تمور", "رطب", "طازج", "طازه", "علبه", "علبة", "كبير", "صغير", "وزن", "درهم",
-  "مغلف", "ساده", "محشو", "محشي", "صندوق", "هدايا", "هديه", "صينيه", "رقائق", "ليوا", "مجموعه", "بوكس",
+  "مغلف", "ساده", "صندوق", "هدايا", "هديه", "صينيه", "رقائق", "ليوا", "مجموعه", "بوكس",
   "نوع", "الحشو", "حشو", "الحجم", "حجم",
 ]);
 function normAr(s) {
@@ -579,22 +579,28 @@ function deterministicImages(text) {
   const df = {};
   for (const { toks } of prods) for (const w of new Set(toks)) df[w] = (df[w] || 0) + 1;
   const scored = prods
-    .map(({ p, toks }) => ({ p, matched: toks.filter((w) => t.includes(w)) }))
+    .map(({ p, toks }) => ({ p, matched: toks.filter((w) => t.includes(w)), tokCount: toks.length }))
     .filter((x) => x.matched.length);
   if (!scored.length) return [];
   const bestScore = scored.reduce((m, s) => Math.max(m, s.matched.length), 0);
-  const countAtBest = scored.filter((s) => s.matched.length === bestScore).length;
-  // كام منتج **أساسي** (مش نكهة/متغيّر) عنده أعلى نقاط — عشان نفضّل المنتج الأساسي وقت التعادل
-  const primAtBest = scored.filter((s) => s.matched.length === bestScore && s.p.primary).length;
   const out = [], seen = new Set();
+  // 1) أي منتج طابق كلمة **فريدة** ليه (df==1) → مؤكد (يدعم أكتر من منتج)
   for (const s of scored) {
-    const uniq = s.matched.some((w) => df[w] === 1);       // كلمة فريدة للمنتج ده
-    const soleMax = s.matched.length === bestScore && countAtBest === 1; // فائز وحيد بأعلى نقاط
-    const solePrimary = s.matched.length === bestScore && s.p.primary && primAtBest === 1; // المنتج الأساسي الوحيد بأعلى نقاط
-    if ((uniq || soleMax || solePrimary) && !seen.has(s.p.img)) { out.push(s.p.img); seen.add(s.p.img); }
-    if (out.length >= 3) break;                             // حد أقصى 3 صور
+    if (s.matched.some((w) => df[w] === 1) && !seen.has(s.p.img)) { out.push(s.p.img); seen.add(s.p.img); }
+    if (out.length >= 3) return out;
   }
-  return out;
+  if (out.length) return out;
+  // 2) مفيش كلمة فريدة → نختار من المنتجات صاحبة أعلى نقاط
+  const top = scored.filter((s) => s.matched.length === bestScore);
+  if (top.length === 1) return [top[0].p.img];             // فائز وحيد
+  // تعادل: نفضّل **المنتج الأساسي الأقل كلمات** (الأساسي/العام مش المحشو/المخصص) لو واضح
+  const prims = top.filter((s) => s.p.primary);
+  if (prims.length) {
+    const minTok = Math.min(...prims.map((s) => s.tokCount));
+    const base = prims.filter((s) => s.tokCount === minTok);
+    if (base.length === 1) return [base[0].p.img];
+  }
+  return [];                                                // غامض → مفيش صورة (أحسن من صورة غلط)
 }
 const IMG_INTENT = /صور[ةه]|بالصوره|picture|image|photo/i;
 function autoImagesFromReply(text, existing) {

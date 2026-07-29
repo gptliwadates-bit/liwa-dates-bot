@@ -404,7 +404,7 @@ async function refreshCatalog() {
       parentInfo[p.id] = { name, img };
       if (img) {
         const core = name.replace(/^تمر\s+/, "").trim();
-        if (core.length >= 4) imgs.push({ core, img });
+        if (core.length >= 4) imgs.push({ core, img, primary: true }); // منتج أساسي
       }
     }
     // صور المتغيرات (النكهات) — لو المتغير له صورة خاصة مختلفة عن الأب، نضيفها بنكهتها
@@ -418,7 +418,7 @@ async function refreshCatalog() {
       const base = (par ? par.name : (v.name || "")).replace(/^تمر\s+/, "").trim();
       const core = `${base} ${flavor}`.trim();        // مثال: "كرانشلي مكاديميا"
       // نضيف كل نكهة بصورتها الخاصة (حتى لو نفس صورة الأب) — النكهة هي الكلمة المميّزة للمطابقة
-      if (core.length >= 4) imgs.push({ core, img: vimg });
+      if (core.length >= 4) imgs.push({ core, img: vimg, primary: false }); // نكهة/متغيّر
     }
     if (lines.length) {
       liveCatalog = lines.join("\n");
@@ -565,7 +565,8 @@ function normAr(s) {
     .replace(/(^|\s)ال/g, "$1");          // شيل "ال" التعريف من بداية الكلمات
 }
 function distinctiveTokens(core) {
-  return normAr(core).split(/\s+/).filter((w) => w.length >= 4 && !IMG_STOPWORDS.has(w));
+  const toks = normAr(core).split(/\s+/).filter((w) => w.length >= 4 && !IMG_STOPWORDS.has(w));
+  return [...new Set(toks)]; // بدون تكرار (عشان الكلمة المكررة زي "فاخر" ماتضخّمش النقاط)
 }
 // مطابقة صور المنتجات من الكتالوج بناءً على الكلمات المميّزة في نص الرد.
 // بيرجّع صور **كل** المنتجات اللي اتذكرت بوضوح (يدعم أكتر من نوع)، وبيتجنّب التخمين لما الطلب عام.
@@ -582,11 +583,14 @@ function deterministicImages(text) {
   if (!scored.length) return [];
   const bestScore = scored.reduce((m, s) => Math.max(m, s.matched.length), 0);
   const countAtBest = scored.filter((s) => s.matched.length === bestScore).length;
+  // كام منتج **أساسي** (مش نكهة/متغيّر) عنده أعلى نقاط — عشان نفضّل المنتج الأساسي وقت التعادل
+  const primAtBest = scored.filter((s) => s.matched.length === bestScore && s.p.primary).length;
   const out = [], seen = new Set();
   for (const s of scored) {
     const uniq = s.matched.some((w) => df[w] === 1);       // كلمة فريدة للمنتج ده
     const soleMax = s.matched.length === bestScore && countAtBest === 1; // فائز وحيد بأعلى نقاط
-    if ((uniq || soleMax) && !seen.has(s.p.img)) { out.push(s.p.img); seen.add(s.p.img); }
+    const solePrimary = s.matched.length === bestScore && s.p.primary && primAtBest === 1; // المنتج الأساسي الوحيد بأعلى نقاط
+    if ((uniq || soleMax || solePrimary) && !seen.has(s.p.img)) { out.push(s.p.img); seen.add(s.p.img); }
     if (out.length >= 3) break;                             // حد أقصى 3 صور
   }
   return out;

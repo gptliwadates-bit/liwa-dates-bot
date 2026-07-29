@@ -580,7 +580,7 @@ function distinctiveTokens(core) {
 // مطابقة صور المنتجات من الكتالوج بناءً على الكلمات المميّزة في نص الرد.
 // بيرجّع صور **كل** المنتجات اللي اتذكرت بوضوح (يدعم أكتر من نوع)، وبيتجنّب التخمين لما الطلب عام.
 // منتج بيتحدد لو: (أ) طابق كلمة فريدة ليه (df==1، زي "مكاديميا")، أو (ب) كان الفائز الوحيد بأعلى نقاط.
-function deterministicImages(text) {
+function deterministicImages(text, lenient) {
   if (!text || !productImages || !productImages.length) return [];
   const t = normAr(text);
   const prods = productImages.map((p) => ({ p, toks: distinctiveTokens(p.core) }));
@@ -590,25 +590,41 @@ function deterministicImages(text) {
     .map(({ p, toks }) => ({ p, matched: toks.filter((w) => t.includes(w)), tokCount: toks.length }))
     .filter((x) => x.matched.length);
   if (!scored.length) return [];
-  const bestScore = scored.reduce((m, s) => Math.max(m, s.matched.length), 0);
+  const cap = lenient ? 5 : 3;
   const out = [], seen = new Set();
   // 1) أي منتج طابق كلمة **فريدة** ليه (df==1) → مؤكد (يدعم أكتر من منتج)
   for (const s of scored) {
     if (s.matched.some((w) => df[w] === 1) && !seen.has(s.p.img)) { out.push(s.p); seen.add(s.p.img); }
-    if (out.length >= 3) return out;
+    if (out.length >= cap) return out;
   }
-  if (out.length) return out;
-  // 2) مفيش كلمة فريدة → نختار من المنتجات صاحبة أعلى نقاط
-  const top = scored.filter((s) => s.matched.length === bestScore);
-  if (top.length === 1) return [top[0].p];                 // فائز وحيد
-  // تعادل: نفضّل **المنتج الأساسي الأقل كلمات** (الأساسي/العام مش المحشو/المخصص) لو واضح
-  const prims = top.filter((s) => s.p.primary);
-  if (prims.length) {
-    const minTok = Math.min(...prims.map((s) => s.tokCount));
-    const base = prims.filter((s) => s.tokCount === minTok);
-    if (base.length === 1) return [base[0].p];
+  if (!lenient) {
+    if (out.length) return out;
+    // مفيش كلمة فريدة → نختار منتج واحد بحذر (فائز وحيد أو أساسي وحيد)
+    const bestScore = scored.reduce((m, s) => Math.max(m, s.matched.length), 0);
+    const top = scored.filter((s) => s.matched.length === bestScore);
+    if (top.length === 1) return [top[0].p];
+    const prims = top.filter((s) => s.p.primary);
+    if (prims.length) {
+      const minTok = Math.min(...prims.map((s) => s.tokCount));
+      const base = prims.filter((s) => s.tokCount === minTok);
+      if (base.length === 1) return [base[0].p];
+    }
+    return [];
   }
-  return [];                                                // غامض → مفيش (أحسن من غلط)
+  // الوضع الصريح (العميل طالب صور): نضيف صورة **ممثّلة** لكل منتج/خط مذكور.
+  // نجمّع المنتجات حسب نفس مجموعة الكلمات المطابقة، ونختار الأساسي الأقصر لكل مجموعة.
+  const groups = {};
+  for (const s of scored) { const key = [...s.matched].sort().join("|"); (groups[key] = groups[key] || []).push(s); }
+  for (const key of Object.keys(groups)) {
+    const g = groups[key];
+    if (g.some((s) => seen.has(s.p.img))) continue; // اتضاف قبل كده (كلمة فريدة)
+    const prims = g.filter((s) => s.p.primary);
+    const pool = (prims.length ? prims : g).slice().sort((a, b) => a.tokCount - b.tokCount || a.p.core.length - b.p.core.length);
+    const pick = pool[0];
+    if (pick && !seen.has(pick.p.img)) { out.push(pick.p); seen.add(pick.p.img); }
+    if (out.length >= cap) break;
+  }
+  return out.slice(0, cap);
 }
 const IMG_INTENT = /صور[ةه]?|بالصوره|picture|image|photo/i; // صورة/صوره/صور (مفرد وجمع)
 // مواضيع مش عن منتج معيّن — مايتبعتش معاها صورة/رابط منتج عشوائي
@@ -620,10 +636,10 @@ function autoProductEntries(text, existing) {
   const explicit = (existing && existing.length) || IMG_INTENT.test(text); // طلب صورة صريح
   // لو الرد عن موضوع مش منتج (توصيل/شحن/فروع/دفع/سياسات) ومفيش طلب صورة صريح → ماتحطش أي منتج
   if (!explicit && NON_PRODUCT_TOPIC.test(text)) return [];
-  const matches = deterministicImages(text); // منتجات متطابقة بثقة (كل واحد {img, link})
-  // طلب صورة صريح → كل المطابق (حتى نوعين/تلاتة).
-  // غير كده → بس لو الرد بيتكلم عن منتج **واحد** محدّد (نرفق صورته ولينكه)، مش قائمة.
+  // طلب صورة صريح → نستخدم الوضع المتساهل (صورة لكل منتج مذكور، لحد 5).
+  const matches = deterministicImages(text, explicit);
   if (explicit) return matches;
+  // غير كده → بس لو الرد بيتكلم عن منتج **واحد** محدّد (نرفق صورته ولينكه)، مش قائمة.
   return matches.length === 1 ? matches : [];
 }
 

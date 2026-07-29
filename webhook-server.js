@@ -386,12 +386,12 @@ async function refreshCatalog() {
     for (const v of variations) {
       const vimg = (v.images && v.images[0] && v.images[0].src) || "";
       if (!vimg) continue;
-      const par = parentInfo[v.parent];
-      if (par && vimg === par.img) continue;          // نفس صورة الأب → مالهاش لزمة
       const flavor = (v.variation || "").replace(/^[^:]*:\s*/, "").trim();
-      if (!flavor) continue;
+      if (!flavor) continue;                          // لازم اسم نكهة/نوع مميّز
+      const par = parentInfo[v.parent];
       const base = (par ? par.name : (v.name || "")).replace(/^تمر\s+/, "").trim();
-      const core = `${base} ${flavor}`.trim();
+      const core = `${base} ${flavor}`.trim();        // مثال: "كرانشلي مكاديميا"
+      // نضيف كل نكهة بصورتها الخاصة (حتى لو نفس صورة الأب) — النكهة هي الكلمة المميّزة للمطابقة
       if (core.length >= 4) imgs.push({ core, img: vimg });
     }
     if (lines.length) {

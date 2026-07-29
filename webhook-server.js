@@ -1272,10 +1272,15 @@ app.get("/aidebug", async (req, res) => {
   const model = req.query.model || AI_MODEL;
   const out = { model, hasKey: !!OPENAI_API_KEY };
   try {
+    if (req.query.full) await ensureFresh(); // نحمّل الكتالوج عشان نجرّب بالبرومبت الكامل
+    const msgs = req.query.full
+      ? [{ role: "system", content: buildSystemPrompt() }, { role: "user", content: "كم سعر المجدول؟" }]
+      : [{ role: "user", content: "hi" }];
+    if (req.query.full) out.promptChars = buildSystemPrompt().length;
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${OPENAI_API_KEY}` },
-      body: JSON.stringify({ model, max_tokens: 5, messages: [{ role: "user", content: "hi" }] }),
+      body: JSON.stringify({ model, max_tokens: req.query.full ? 300 : 5, messages: msgs }),
     });
     out.status = r.status;
     const data = await r.json();

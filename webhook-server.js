@@ -516,20 +516,18 @@ function distinctiveTokens(core) {
 function deterministicImage(text) {
   if (!text || !productImages || !productImages.length) return [];
   const t = normAr(text);
-  const prods = productImages.map((p) => ({ p, toks: distinctiveTokens(p.core) }));
-  const df = {};
-  for (const { toks } of prods) for (const w of new Set(toks)) df[w] = (df[w] || 0) + 1;
-  let best = null, bestScore = 0;
-  for (const { p, toks } of prods) {
-    const matched = toks.filter((w) => t.includes(w));
-    if (!matched.length) continue;
-    if (!matched.some((w) => df[w] === 1)) continue;             // لازم كلمة فريدة للمنتج ده
-    const score = matched.length;
-    if (score > bestScore || (score === bestScore && best && p.core.length > best.core.length)) {
-      best = p; bestScore = score;
-    }
+  // نحسب لكل منتج عدد كلماته المميّزة اللي ظهرت في الرد، ونرجّع المنتج الفائز
+  // بس لو كان فائز **واضح** (نقاطه أعلى من أي منتج تاني) — عشان مايجيبش صورة نوع غلط
+  // ولا يخمّن لما الطلب عام (زي "كرانشلي" من غير نكهة).
+  let best = null, bestScore = 0, secondScore = 0;
+  for (const p of productImages) {
+    const toks = distinctiveTokens(p.core);
+    if (!toks.length) continue;
+    const score = toks.filter((w) => t.includes(w)).length;
+    if (score > bestScore) { secondScore = bestScore; best = p; bestScore = score; }
+    else if (score > secondScore) { secondScore = score; }
   }
-  return best ? [best.img] : [];
+  return (best && bestScore >= 1 && bestScore > secondScore) ? [best.img] : [];
 }
 const IMG_INTENT = /صور[ةه]|بالصوره|picture|image|photo/i;
 function autoImagesFromReply(text, existing) {

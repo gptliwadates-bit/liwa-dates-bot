@@ -484,6 +484,8 @@ const RECOMMEND_HINT = /أنصح|انصح|أرشّح|ارشح|اقترح|أقت�
 const IMG_STOPWORDS = new Set([
   "تمر", "تمور", "رطب", "فاخر", "فاخره", "طازج", "طازه", "علبه", "كبير", "صغير", "وزن", "درهم",
   "مغلف", "ساده", "محشو", "محشي", "صندوق", "هدايا", "هديه", "صينيه", "رقائق", "ليوا", "مجموعه", "بوكس",
+  // أسماء الخطوط/البراندات المشتركة بين أكتر من منتج (لازم نتجاهلها عشان نطابق على نوع المنتج المميّز)
+  "كرانشلي", "كرنشلي", "crunchly", "معمول", "رهايف", "كنافه", "والكنافه",
 ]);
 function normAr(s) {
   return (s || "")
@@ -494,15 +496,22 @@ function normAr(s) {
 function distinctiveTokens(core) {
   return normAr(core).split(/\s+/).filter((w) => w.length >= 4 && !IMG_STOPWORDS.has(w));
 }
-function autoImagesFromReply(text, existing) {
-  if (existing && existing.length) return existing;               // الموديل حط صورة بالفعل
-  if (!text || !RECOMMEND_HINT.test(text)) return existing || []; // بس وقت الترشيح/البيع
-  if (!productImages || !productImages.length) return existing || [];
+// مطابقة صورة المنتج من الكتالوج بناءً على الكلمة المميّزة لنوع المنتج في نص الرد
+function deterministicImage(text) {
+  if (!text || !productImages || !productImages.length) return [];
   const t = normAr(text);
   for (const p of productImages) {                               // الأطول أول = الأكثر تحديدًا
     const toks = distinctiveTokens(p.core);
     if (toks.length && toks.some((w) => t.includes(w))) return [p.img];
   }
+  return [];
+}
+function autoImagesFromReply(text, existing) {
+  const det = deterministicImage(text);
+  // لو الموديل حط صورة، نصحّحها بالمطابقة الأدق (عشان مايجيبش صورة منتج غلط)
+  if (existing && existing.length) return det.length ? det : existing;
+  // الموديل ماحطش صورة: نعرض تلقائيًا بس وقت الترشيح/البيع
+  if (text && RECOMMEND_HINT.test(text) && det.length) return det;
   return existing || [];
 }
 

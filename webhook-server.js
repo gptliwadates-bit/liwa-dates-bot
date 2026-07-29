@@ -1294,6 +1294,30 @@ app.get("/catalog", (req, res) => {
   );
 });
 
+// تشخيص الفيد: نشوف السيرفر بيستقبل إيه
+app.get("/feeddebug", async (req, res) => {
+  if (req.query.key !== META_VERIFY_TOKEN) return res.status(403).json({ error: "forbidden" });
+  const info = {};
+  try {
+    const r = await fetch(FEED_URL);
+    info.status = r.status;
+    info.contentEncoding = r.headers.get("content-encoding");
+    info.contentType = r.headers.get("content-type");
+    let buf = Buffer.from(await r.arrayBuffer());
+    info.rawBytes = buf.length;
+    let xml = buf.toString("utf8");
+    info.rawHasItem = xml.includes("<item>");
+    info.rawHead = xml.slice(0, 50).replace(/[0-9]/g, "#");
+    if (!info.rawHasItem) {
+      const zlib = require("zlib");
+      for (const [nm, fn] of [["br", zlib.brotliDecompressSync], ["gzip", zlib.gunzipSync]]) {
+        try { const d = fn(buf).toString("utf8"); if (d.includes("<item>")) { info.decoded = nm; info.decodedItems = (d.match(/<item>/g) || []).length; break; } } catch (e) { info["err_" + nm] = String(e.message).slice(0, 60); }
+      }
+    } else { info.rawItems = (xml.match(/<item>/g) || []).length; }
+  } catch (e) { info.fetchError = String(e.message).slice(0, 120); }
+  res.json(info);
+});
+
 // إجبار تحديث الكتالوج والأسعار فورًا (يتخطى الكاش) — للاستخدام بعد تحديث الفيد
 app.get("/refresh", async (req, res) => {
   if (req.query.key !== META_VERIFY_TOKEN) return res.status(403).send("forbidden");

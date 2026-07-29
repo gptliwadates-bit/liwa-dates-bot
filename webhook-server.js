@@ -353,7 +353,16 @@ async function refreshFeedPrices() {
   try {
     const res = await fetch(FEED_URL);
     if (!res.ok) return;
-    const xml = await res.text();
+    // الفيد مضغوط بـ Brotli/gzip — لو fetch مافكّش الضغط، نفكّه يدويًا
+    let buf = Buffer.from(await res.arrayBuffer());
+    let xml = buf.toString("utf8");
+    if (!xml.includes("<item>")) {
+      const zlib = require("zlib");
+      for (const fn of [zlib.brotliDecompressSync, zlib.gunzipSync, zlib.inflateSync]) {
+        try { const d = fn(buf).toString("utf8"); if (d.includes("<item>")) { xml = d; break; } } catch (e) {}
+      }
+    }
+    if (!xml.includes("<item>")) { console.error("refreshFeedPrices: could not decode feed"); return; }
     const map = {};
     for (const raw of xml.split("<item>").slice(1)) {
       const b = raw.split("</item>")[0];
@@ -1280,7 +1289,18 @@ app.get("/catalog", (req, res) => {
   if (req.query.key !== META_VERIFY_TOKEN) return res.status(403).send("forbidden");
   res.set("content-type", "text/plain; charset=utf-8").send(
     "آخر تحديث: " + (liveCatalogUpdatedAt ? liveCatalogUpdatedAt.toISOString() : "لم يُحمّل بعد") +
+    " | أسعار الفيد: " + Object.keys(feedPrices).length +
     "\n\n" + (liveCatalog || "(الكتالوج فاضي — بيستخدم الأسعار الثابتة)")
+  );
+});
+
+// إجبار تحديث الكتالوج والأسعار فورًا (يتخطى الكاش) — للاستخدام بعد تحديث الفيد
+app.get("/refresh", async (req, res) => {
+  if (req.query.key !== META_VERIFY_TOKEN) return res.status(403).send("forbidden");
+  await refreshCatalog();
+  res.set("content-type", "text/plain; charset=utf-8").send(
+    "تم التحديث ✔ | أسعار الفيد: " + Object.keys(feedPrices).length +
+    " | آخر تحديث: " + (liveCatalogUpdatedAt ? liveCatalogUpdatedAt.toISOString() : "-")
   );
 });
 

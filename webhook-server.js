@@ -631,6 +631,46 @@ function parseReply(raw, source) {
   return { text, handoff, order, images: finalImages };
 }
 
+// ===== تحويل الصوت لنص (Whisper من OpenAI) — للرسائل الصوتية =====
+async function transcribeAudio(buffer, filename, mime) {
+  try {
+    const fd = new FormData();
+    fd.append("file", new Blob([buffer], { type: mime || "audio/ogg" }), filename || "audio.ogg");
+    fd.append("model", "whisper-1"); // يدعم العربية وكل اللغات تلقائيًا
+    const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: { authorization: `Bearer ${OPENAI_API_KEY}` },
+      body: fd,
+    });
+    if (!res.ok) { console.error("transcribe failed:", res.status, await res.text()); return null; }
+    const data = await res.json();
+    return (data.text || "").trim() || null;
+  } catch (e) { console.error("transcribeAudio error:", e); return null; }
+}
+
+// تنزيل ملف صوتي من واتساب (خطوتين: معرّف الميديا -> رابط -> تنزيل)
+async function downloadWhatsAppMedia(mediaId) {
+  try {
+    const infoRes = await fetch(`https://graph.facebook.com/v21.0/${mediaId}`, {
+      headers: { authorization: `Bearer ${WHATSAPP_TOKEN}` },
+    });
+    if (!infoRes.ok) return null;
+    const info = await infoRes.json();
+    if (!info.url) return null;
+    const mediaRes = await fetch(info.url, { headers: { authorization: `Bearer ${WHATSAPP_TOKEN}` } });
+    if (!mediaRes.ok) return null;
+    return { buffer: Buffer.from(await mediaRes.arrayBuffer()), mime: info.mime_type || "audio/ogg" };
+  } catch (e) { console.error("downloadWhatsAppMedia failed:", e); return null; }
+}
+// تنزيل ملف من رابط مباشر (مرفقات ماسنجر)
+async function downloadUrl(url) {
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    return Buffer.from(await r.arrayBuffer());
+  } catch (e) { console.error("downloadUrl failed:", e); return null; }
+}
+
 // ===== دالة تسأل OpenAI برسالة واحدة (تستخدمها قنوات ميتا) =====
 async function askAI(userMessage, source) {
   try {
@@ -822,14 +862,25 @@ app.post("/webhook", async (req, res) => {
     if (body.object === "page" || body.object === "instagram") {
       for (const entry of body.entry || []) {
         for (const event of entry.messaging || []) {
-          if (event.message && event.message.text && !event.message.is_echo) {
+          if (event.message && !event.message.is_echo) {
             const senderId = event.sender.id;
 
             // لو المحادثة اتحوّلت لموظف قبل كده، البوت يسكت
             if (handedOff.has(senderId)) continue;
 
+            // نجيب نص الرسالة — سواء نصية أو نحوّل الرسالة الصوتية لنص
+            let userText = event.message.text || null;
+            if (!userText && Array.isArray(event.message.attachments)) {
+              const au = event.message.attachments.find((a) => a.type === "audio" && a.payload && a.payload.url);
+              if (au) {
+                const buf = await downloadUrl(au.payload.url);
+                if (buf) userText = await transcribeAudio(buf, "audio.mp4", "audio/mp4");
+              }
+            }
+            if (!userText) continue;
+
             // العميل طلب موظف صراحةً → تحويل فوري
-            if (wantsHuman(event.message.text)) {
+            if (wantsHuman(userText)) {
               await sendMessenger(senderId, HANDOFF_MESSAGE);
               await passToHuman(senderId);
               handedOff.add(senderId);
@@ -837,7 +888,7 @@ app.post("/webhook", async (req, res) => {
               continue;
             }
 
-            const reply = await askAI(event.message.text, body.object === "instagram" ? "instagram" : "messenger");
+            const reply = await askAI(userText, body.object === "instagram" ? "instagram" : "messenger");
             await sendMessenger(senderId, reply.text);
             if (reply.images) for (const u of reply.images) await sendMessengerImage(senderId, u);
             if (reply.order) {
@@ -846,7 +897,7 @@ app.post("/webhook", async (req, res) => {
                 `🌴 أوردر جديد — ${channel}\n\n${reply.order}\n\nمعرّف العميل: ${senderId}`
               );
             }
-            if (reply.handoff || needsEscalation(event.message.text)) {
+            if (reply.handoff || needsEscalation(userText)) {
               await passToHuman(senderId);
               handedOff.add(senderId);
               console.log("Handoff → human:", senderId);
@@ -864,30 +915,38 @@ app.post("/webhook", async (req, res) => {
         for (const change of entry.changes || []) {
           const messages = change.value?.messages || [];
           for (const msg of messages) {
+            const from = msg.from;
+            if (!from || handedOff.has(from)) continue;
+
+            // نجيب نص الرسالة — نصية أو نحوّل الرسالة الصوتية (voice note) لنص
+            let userText = null;
             if (msg.type === "text") {
-              const from = msg.from;
+              userText = msg.text.body;
+            } else if ((msg.type === "audio" || msg.type === "voice") && msg[msg.type] && msg[msg.type].id) {
+              const media = await downloadWhatsAppMedia(msg[msg.type].id);
+              if (media) userText = await transcribeAudio(media.buffer, "audio.ogg", media.mime);
+              if (!userText) { await sendWhatsApp(from, "ما قدرت أفهم الرسالة الصوتية، ممكن تكتبها أو تبعتها تاني؟ 🙏"); continue; }
+            }
+            if (!userText) continue;
 
-              if (handedOff.has(from)) continue;
+            if (wantsHuman(userText)) {
+              await sendWhatsApp(from, HANDOFF_MESSAGE);
+              handedOff.add(from);
+              console.log("WhatsApp handoff (keyword):", from);
+              continue;
+            }
 
-              if (wantsHuman(msg.text.body)) {
-                await sendWhatsApp(from, HANDOFF_MESSAGE);
-                handedOff.add(from);
-                console.log("WhatsApp handoff (keyword):", from);
-                continue;
-              }
-
-              const reply = await askAI(msg.text.body, "whatsapp");
-              await sendWhatsApp(from, reply.text);
-              if (reply.images) for (const u of reply.images) await sendWhatsAppImage(from, u);
-              if (reply.order) {
-                await notifyOwner(
-                  `🌴 أوردر جديد — واتساب\n\n${reply.order}\n\nرقم العميل: ${from}`
-                );
-              }
-              if (reply.handoff || needsEscalation(msg.text.body)) {
-                handedOff.add(from);
-                console.log("WhatsApp handoff:", from);
-              }
+            const reply = await askAI(userText, "whatsapp");
+            await sendWhatsApp(from, reply.text);
+            if (reply.images) for (const u of reply.images) await sendWhatsAppImage(from, u);
+            if (reply.order) {
+              await notifyOwner(
+                `🌴 أوردر جديد — واتساب\n\n${reply.order}\n\nرقم العميل: ${from}`
+              );
+            }
+            if (reply.handoff || needsEscalation(userText)) {
+              handedOff.add(from);
+              console.log("WhatsApp handoff:", from);
             }
           }
         }
@@ -934,6 +993,21 @@ app.get("/chat", (req, res) => {
     return res.status(403).send("forbidden — استخدم /chat?key=YOUR_VERIFY_TOKEN");
   }
   res.set("content-type", "text/html; charset=utf-8").send(CHAT_PAGE);
+});
+
+// API تحويل الصوت لنص (لصفحة التجربة): يستقبل ملف صوتي ويرجّع النص
+app.post("/api/transcribe", express.raw({ type: "*/*", limit: "12mb" }), async (req, res) => {
+  if (req.query.key !== META_VERIFY_TOKEN) return res.status(403).json({ error: "forbidden" });
+  try {
+    if (!req.body || !req.body.length) return res.json({ text: "" });
+    const mime = req.headers["content-type"] || "audio/webm";
+    const ext = mime.includes("ogg") ? "ogg" : mime.includes("mp") ? "mp4" : mime.includes("wav") ? "wav" : "webm";
+    const text = await transcribeAudio(req.body, `audio.${ext}`, mime);
+    res.json({ text: text || "" });
+  } catch (e) {
+    console.error("/api/transcribe error:", e);
+    res.json({ text: "" });
+  }
 });
 
 // API المحادثة (بذاكرة): يستقبل تاريخ الرسائل ويرجّع رد الوكيل
@@ -1000,6 +1074,7 @@ const CHAT_PAGE = `<!DOCTYPE html>
 <div id="chat"></div>
 <div id="bar"><div class="wrap">
   <input id="inp" placeholder="اكتب رسالتك زي أي عميل..." autocomplete="off">
+  <button id="mic" title="سجّل رسالة صوتية" style="background:#1e2530;color:#e6e6e6;border:none;border-radius:10px;padding:0 14px;font-size:18px;cursor:pointer;">🎤</button>
   <button id="send">إرسال</button>
 </div></div>
 <script>
@@ -1079,6 +1154,37 @@ const CHAT_PAGE = `<!DOCTYPE html>
   }
   send.onclick = go;
   inp.addEventListener("keydown", function(e){ if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); go(); } });
+
+  // ===== تسجيل صوتي: سجّل -> حوّل لنص -> ابعت =====
+  var mic = document.getElementById("mic");
+  var mediaRec = null, chunks = [], recording = false;
+  async function startRec(){
+    try{
+      var stream = await navigator.mediaDevices.getUserMedia({audio:true});
+      chunks = [];
+      mediaRec = new MediaRecorder(stream);
+      mediaRec.ondataavailable = function(e){ if(e.data && e.data.size) chunks.push(e.data); };
+      mediaRec.onstop = async function(){
+        stream.getTracks().forEach(function(t){ t.stop(); });
+        var blob = new Blob(chunks, {type: mediaRec.mimeType || "audio/webm"});
+        if(!blob.size){ return; }
+        inp.placeholder = "بحوّل الصوت لنص..."; inp.disabled = true; mic.disabled = true;
+        try{
+          var r = await fetch("/api/transcribe?key="+encodeURIComponent(key), {
+            method:"POST", headers:{"content-type": blob.type}, body: blob
+          });
+          var d = await r.json();
+          inp.disabled = false; mic.disabled = false; inp.placeholder = "اكتب رسالتك زي أي عميل...";
+          if(d.text){ inp.value = d.text; go(); }
+          else { note("ما قدرت أفهم الصوت، جرّب تاني أو اكتب."); }
+        }catch(e){ inp.disabled=false; mic.disabled=false; inp.placeholder="اكتب رسالتك زي أي عميل..."; note("صار خطأ في تحويل الصوت."); }
+      };
+      mediaRec.start();
+      recording = true; mic.textContent = "⏹"; mic.style.background = "#c0392b"; inp.placeholder = "بسجّل... اضغط لإيقاف";
+    }catch(e){ note("محتاج إذن الميكروفون عشان التسجيل."); }
+  }
+  function stopRec(){ if(mediaRec && recording){ recording=false; mic.textContent="🎤"; mic.style.background="#1e2530"; mediaRec.stop(); } }
+  mic.addEventListener("click", function(){ if(recording) stopRec(); else startRec(); });
 </script>
 </body>
 </html>`;

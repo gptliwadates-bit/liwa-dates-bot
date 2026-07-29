@@ -28,7 +28,7 @@ const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const WHATSAPP_PHONE_ID = process.env.WHATSAPP_PHONE_ID;
 
-const AI_MODEL = process.env.AI_MODEL || "gpt-4o"; // النموذج الأقوى (دقة والتزام أعلى). ممكن تغييره من متغير AI_MODEL
+const AI_MODEL = process.env.AI_MODEL || "gpt-4o-mini"; // افتراضي شغّال دايمًا. للأقوى حط AI_MODEL=gpt-4o في Vercel
 
 // ===== إعدادات التحويل لموظف بشري (Human Handoff) =====
 // العلامة اللي كلود بيحطها في آخر رده لما يقرر إنه محتاج موظف بشري.
@@ -1264,6 +1264,25 @@ app.get("/catalog", (req, res) => {
     " | أسعار الفيد: " + Object.keys(feedPrices).length +
     "\n\n" + (liveCatalog || "(الكتالوج فاضي — بيستخدم الأسعار الثابتة)")
   );
+});
+
+// تشخيص OpenAI: نجرّب نداء ونرجّع السبب الحقيقي لأي خطأ
+app.get("/aidebug", async (req, res) => {
+  if (req.query.key !== META_VERIFY_TOKEN) return res.status(403).json({ error: "forbidden" });
+  const model = req.query.model || AI_MODEL;
+  const out = { model, hasKey: !!OPENAI_API_KEY };
+  try {
+    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${OPENAI_API_KEY}` },
+      body: JSON.stringify({ model, max_tokens: 5, messages: [{ role: "user", content: "hi" }] }),
+    });
+    out.status = r.status;
+    const data = await r.json();
+    if (data.error) { out.errorType = data.error.type; out.errorCode = data.error.code; out.errorMsg = String(data.error.message || "").slice(0, 200); }
+    else out.ok = !!(data.choices && data.choices[0]);
+  } catch (e) { out.fetchError = String(e.message).slice(0, 150); }
+  res.json(out);
 });
 
 // تشخيص الفيد: نشوف السيرفر بيستقبل إيه

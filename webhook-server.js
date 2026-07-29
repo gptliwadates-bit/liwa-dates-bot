@@ -598,10 +598,15 @@ function deterministicImages(text) {
 const IMG_INTENT = /صور[ةه]|بالصوره|picture|image|photo/i;
 function autoImagesFromReply(text, existing) {
   // نتجاهل رابط الصورة اللي حطه الموديل تمامًا (ممكن يكون غلط) ونعتمد على مطابقة السيرفر فقط.
-  // نعرض صورة لما: الموديل حط علامة صورة، أو الرد نفسه فيه نية صورة ("تفضل صورة..")، أو وقت الترشيح/البيع.
-  const wantsImage = (existing && existing.length) || (text && (IMG_INTENT.test(text) || RECOMMEND_HINT.test(text)));
+  if (!text) return [];
+  const explicit = (existing && existing.length) || IMG_INTENT.test(text); // العميل طلب صورة صراحةً
+  const wantsImage = explicit || RECOMMEND_HINT.test(text);                 // أو ترشيح/بيع
   if (!wantsImage) return [];
-  return deterministicImages(text); // صور المنتجات المؤكدة (0 أو أكتر) أو لا شيء
+  const imgs = deterministicImages(text);
+  // طلب صورة صريح → اعرض كل المطابق (حتى نوعين/تلاتة).
+  // ترشيح فقط (من غير طلب صورة) → اعرض بس لو منتج **واحد** مركّز، مش قائمة طويلة (عشان مايظهرش صور غلط في التعداد).
+  if (explicit) return imgs;
+  return imgs.length === 1 ? imgs : [];
 }
 
 // UTM: نضيف باراميترات تتبّع على أي لينك لموقع ليوا يطلع للعميل — عشان نعرف الزيارة جاية من البوت وقناته

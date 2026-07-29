@@ -49,8 +49,32 @@ const HANDOFF_KEYWORDS = [
 const PAGE_INBOX_APP_ID = "263902037430900";
 
 // المحادثات اللي اتحوّلت لموظف بشري — البوت بيسكت عنها ومايردش.
-// (في الذاكرة فقط؛ بتترجع لو السيرفر اتعمله restart. للإنتاج الجاد استخدم قاعدة بيانات أو Redis.)
-const handedOff = new Set();
+// بتتخزّن في Upstash Redis لو متغيراته موجودة (بتفضل ثابتة على Vercel Serverless)،
+// وإلا في الذاكرة (بتترجع بين الطلبات على Serverless — كافية للتجربة).
+const _memHandoff = new Set();
+const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
+const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+async function _upstash(cmd) {
+  const res = await fetch(`${UPSTASH_URL}/${cmd.map(encodeURIComponent).join("/")}`, {
+    headers: { authorization: `Bearer ${UPSTASH_TOKEN}` },
+  });
+  if (!res.ok) throw new Error("upstash " + res.status);
+  return (await res.json()).result;
+}
+const handedOff = {
+  async has(id) {
+    if (UPSTASH_URL && UPSTASH_TOKEN) { try { return (await _upstash(["sismember", "liwa_handoff", id])) === 1; } catch (e) { console.error(e); } }
+    return _memHandoff.has(id);
+  },
+  async add(id) {
+    _memHandoff.add(id);
+    if (UPSTASH_URL && UPSTASH_TOKEN) { try { await _upstash(["sadd", "liwa_handoff", id]); } catch (e) { console.error(e); } }
+  },
+  async delete(id) {
+    _memHandoff.delete(id);
+    if (UPSTASH_URL && UPSTASH_TOKEN) { try { await _upstash(["srem", "liwa_handoff", id]); } catch (e) { console.error(e); } }
+  },
+};
 
 // ===== إعدادات تنبيه الأوردر على تيليجرام =====
 // اعمل بوت تيليجرام من @BotFather وخُد التوكن، وهات الـ chat id بتاعك.
@@ -854,7 +878,6 @@ app.get("/webhook", (req, res) => {
 
 // ===== 2) استقبال الرسائل =====
 app.post("/webhook", async (req, res) => {
-  res.sendStatus(200); // رد سريع لميتا الأول
   const body = req.body;
 
   try {
@@ -866,7 +889,7 @@ app.post("/webhook", async (req, res) => {
             const senderId = event.sender.id;
 
             // لو المحادثة اتحوّلت لموظف قبل كده، البوت يسكت
-            if (handedOff.has(senderId)) continue;
+            if (await handedOff.has(senderId)) continue;
 
             // نجيب نص الرسالة — سواء نصية أو نحوّل الرسالة الصوتية لنص
             let userText = event.message.text || null;
@@ -883,7 +906,7 @@ app.post("/webhook", async (req, res) => {
             if (wantsHuman(userText)) {
               await sendMessenger(senderId, HANDOFF_MESSAGE);
               await passToHuman(senderId);
-              handedOff.add(senderId);
+              await handedOff.add(senderId);
               console.log("Handoff (keyword) → human:", senderId);
               continue;
             }
@@ -899,7 +922,7 @@ app.post("/webhook", async (req, res) => {
             }
             if (reply.handoff || needsEscalation(userText)) {
               await passToHuman(senderId);
-              handedOff.add(senderId);
+              await handedOff.add(senderId);
               console.log("Handoff → human:", senderId);
             }
           }
@@ -916,7 +939,7 @@ app.post("/webhook", async (req, res) => {
           const messages = change.value?.messages || [];
           for (const msg of messages) {
             const from = msg.from;
-            if (!from || handedOff.has(from)) continue;
+            if (!from || await handedOff.has(from)) continue;
 
             // نجيب نص الرسالة — نصية أو نحوّل الرسالة الصوتية (voice note) لنص
             let userText = null;
@@ -931,7 +954,7 @@ app.post("/webhook", async (req, res) => {
 
             if (wantsHuman(userText)) {
               await sendWhatsApp(from, HANDOFF_MESSAGE);
-              handedOff.add(from);
+              await handedOff.add(from);
               console.log("WhatsApp handoff (keyword):", from);
               continue;
             }
@@ -945,7 +968,7 @@ app.post("/webhook", async (req, res) => {
               );
             }
             if (reply.handoff || needsEscalation(userText)) {
-              handedOff.add(from);
+              await handedOff.add(from);
               console.log("WhatsApp handoff:", from);
             }
           }
@@ -955,18 +978,20 @@ app.post("/webhook", async (req, res) => {
   } catch (e) {
     console.error("webhook handler error:", e);
   }
+  // نرد على ميتا بعد ما نخلّص المعالجة (مهم لـ Vercel Serverless عشان الشغل مايتقطعش)
+  res.sendStatus(200);
 });
 
 // ===== إرجاع محادثة للبوت بعد ما الموظف يخلّص =====
 // افتح في المتصفح: https://<your-server>/release?id=USER_ID  → البوت يرجع يرد على العميل ده.
 // (اختياري: حط ADMIN_KEY في المتغيرات وضيفه ?key=... عشان تحمي الرابط)
-app.get("/release", (req, res) => {
+app.get("/release", async (req, res) => {
   const id = req.query.id;
   if (process.env.ADMIN_KEY && req.query.key !== process.env.ADMIN_KEY) {
     return res.status(403).send("forbidden");
   }
-  if (id && handedOff.has(id)) {
-    handedOff.delete(id);
+  if (id && (await handedOff.has(id))) {
+    await handedOff.delete(id);
     return res.send(`تم إرجاع المحادثة ${id} للبوت ✔`);
   }
   res.send("المحادثة مش متحوّلة أصلاً أو الـ id غلط.");

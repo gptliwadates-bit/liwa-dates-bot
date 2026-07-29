@@ -507,6 +507,9 @@ function buildSystemPrompt() {
     SYSTEM_PROMPT +
     `\n\n## الكتالوج الحيّ (محدّث تلقائيًا من liwadates.com — لكل منتج سعر كل حجم بالضبط + رابطه)\n` +
     `اعتمد على الأسعار دي فقط. اقتبس سعر الحجم اللي يطلبه العميل حرفيًا. ولو حبّ يطلب، اعطِه الرابط.\n` +
+    `**مهم — عند السؤال عن "أنواع" منتج أو "كل أنواع X":** بعض المنتجات ليها أكتر من إدخال منفصل في الكتالوج بنفس الاسم. ` +
+    `مثال: **كرانشلي** له 4 أنواع مش اتنين — كرانشلي بالمكاديميا، كرانشلي بالفستق، **كرانشلي السمسم**، و**كرانشلي الفول السوداني والكنافة**. ` +
+    `فقبل ما تقول "عندنا نوعين بس"، دوّر في الكتالوج كله عن **كل** الإدخالات اللي فيها اسم المنتج واذكرها كلها بأسعارها.\n` +
     liveCatalog;
   if (bestSellers.length) {
     out +=
@@ -563,24 +566,29 @@ function normAr(s) {
 function distinctiveTokens(core) {
   return normAr(core).split(/\s+/).filter((w) => w.length >= 4 && !IMG_STOPWORDS.has(w));
 }
-// مطابقة صورة المنتج من الكتالوج: نطابق على كلمات المنتج المميّزة في نص الرد.
-// نستخدم تكرار الكلمة عبر الكتالوج (df): لازم المنتج الفائز يطابق كلمة **فريدة** ليه (مش مشتركة زي "كرانشلي")،
-// عشان مايجيبش صورة نوع غلط. لو مفيش تطابق مؤكد، مايعرضش صورة أصلاً (أحسن من صورة غلط).
-function deterministicImage(text) {
+// مطابقة صور المنتجات من الكتالوج بناءً على الكلمات المميّزة في نص الرد.
+// بيرجّع صور **كل** المنتجات اللي اتذكرت بوضوح (يدعم أكتر من نوع)، وبيتجنّب التخمين لما الطلب عام.
+// منتج بيتحدد لو: (أ) طابق كلمة فريدة ليه (df==1، زي "مكاديميا")، أو (ب) كان الفائز الوحيد بأعلى نقاط.
+function deterministicImages(text) {
   if (!text || !productImages || !productImages.length) return [];
   const t = normAr(text);
-  // نحسب لكل منتج عدد كلماته المميّزة اللي ظهرت في الرد، ونرجّع المنتج الفائز
-  // بس لو كان فائز **واضح** (نقاطه أعلى من أي منتج تاني) — عشان مايجيبش صورة نوع غلط
-  // ولا يخمّن لما الطلب عام (زي "كرانشلي" من غير نكهة).
-  let best = null, bestScore = 0, secondScore = 0;
-  for (const p of productImages) {
-    const toks = distinctiveTokens(p.core);
-    if (!toks.length) continue;
-    const score = toks.filter((w) => t.includes(w)).length;
-    if (score > bestScore) { secondScore = bestScore; best = p; bestScore = score; }
-    else if (score > secondScore) { secondScore = score; }
+  const prods = productImages.map((p) => ({ p, toks: distinctiveTokens(p.core) }));
+  const df = {};
+  for (const { toks } of prods) for (const w of new Set(toks)) df[w] = (df[w] || 0) + 1;
+  const scored = prods
+    .map(({ p, toks }) => ({ p, matched: toks.filter((w) => t.includes(w)) }))
+    .filter((x) => x.matched.length);
+  if (!scored.length) return [];
+  const bestScore = scored.reduce((m, s) => Math.max(m, s.matched.length), 0);
+  const countAtBest = scored.filter((s) => s.matched.length === bestScore).length;
+  const out = [], seen = new Set();
+  for (const s of scored) {
+    const uniq = s.matched.some((w) => df[w] === 1);       // كلمة فريدة للمنتج ده
+    const soleMax = s.matched.length === bestScore && countAtBest === 1; // فائز وحيد بأعلى نقاط
+    if ((uniq || soleMax) && !seen.has(s.p.img)) { out.push(s.p.img); seen.add(s.p.img); }
+    if (out.length >= 3) break;                             // حد أقصى 3 صور
   }
-  return (best && bestScore >= 1 && bestScore > secondScore) ? [best.img] : [];
+  return out;
 }
 const IMG_INTENT = /صور[ةه]|بالصوره|picture|image|photo/i;
 function autoImagesFromReply(text, existing) {
@@ -588,7 +596,7 @@ function autoImagesFromReply(text, existing) {
   // نعرض صورة لما: الموديل حط علامة صورة، أو الرد نفسه فيه نية صورة ("تفضل صورة..")، أو وقت الترشيح/البيع.
   const wantsImage = (existing && existing.length) || (text && (IMG_INTENT.test(text) || RECOMMEND_HINT.test(text)));
   if (!wantsImage) return [];
-  return deterministicImage(text); // صورة مؤكدة أو لا شيء
+  return deterministicImages(text); // صور المنتجات المؤكدة (0 أو أكتر) أو لا شيء
 }
 
 // UTM: نضيف باراميترات تتبّع على أي لينك لموقع ليوا يطلع للعميل — عشان نعرف الزيارة جاية من البوت وقناته

@@ -10,16 +10,23 @@
  * المتغيرات المطلوبة (Environment Variables):
  *   OPENAI_API_KEY      = مفتاح OpenAI من platform.openai.com/api-keys
  *   META_VERIFY_TOKEN   = كلمة سر تخترعها إنت (نفسها في إعداد Webhook بميتا)
+ *   APP_SECRET          = (مهم للأمان) App Secret من إعدادات تطبيق ميتا — للتحقق من توقيع الويبهوك
  *   PAGE_ACCESS_TOKEN   = توكن صفحة الفيسبوك (يشتغل للانستجرام كمان)
  *   WHATSAPP_TOKEN      = توكن الواتساب
  *   WHATSAPP_PHONE_ID   = الـ Phone Number ID بتاع الواتساب
- *   TELEGRAM_BOT_TOKEN  = (اختياري) توكن بوت تيليجرام لتنبيهات الأوردر
+ *   ADMIN_KEY           = (اختياري) مفتاح منفصل لصفحات التشخيص و/release (يرجع لـ META_VERIFY_TOKEN لو مش متعرّف)
+ *   UPSTASH_REDIS_REST_URL   = (اختياري بس مهم) عشان الذاكرة وحالة التحويل تفضل ثابتة على Serverless
+ *   UPSTASH_REDIS_REST_TOKEN = (اختياري) توكن Upstash
+ *   AI_MAX_TOKENS       = (اختياري) حد أقصى لطول رد الموديل (افتراضي 900)
+ *   TELEGRAM_BOT_TOKEN  = (اختياري) توكن بوت تيليجرام لتنبيهات الأوردر والتحويل
  *   TELEGRAM_CHAT_ID    = (اختياري) الـ chat id اللي التنبيه يتبعت له
  */
 
 const express = require("express");
+const crypto = require("crypto");
 const app = express();
-app.use(express.json());
+// بنحتفظ بالنص الخام (raw body) عشان نتحقق من توقيع ميتا (X-Hub-Signature-256)
+app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
 
 // ===== المتغيرات =====
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -27,6 +34,18 @@ const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
 const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const WHATSAPP_PHONE_ID = process.env.WHATSAPP_PHONE_ID;
+// سر التطبيق من ميتا (App Settings → Basic → App Secret) — للتحقق من توقيع الويبهوك.
+const APP_SECRET = process.env.APP_SECRET;
+// مفتاح أدمن منفصل لصفحات التشخيص و/release. لو مش متعرّف بنرجع لـ META_VERIFY_TOKEN.
+const ADMIN_KEY = process.env.ADMIN_KEY || META_VERIFY_TOKEN;
+const AI_MAX_TOKENS = Number(process.env.AI_MAX_TOKENS) || 900;
+// مهلة لأي طلب شبكة عشان الفنكشن ماتعلّقش على Serverless
+async function fetchT(url, opts = {}, ms = 20000) {
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(), ms);
+  try { return await fetch(url, { ...opts, signal: c.signal }); }
+  finally { clearTimeout(t); }
+}
 
 const AI_MODEL = process.env.AI_MODEL || "gpt-4o-mini"; // افتراضي شغّال دايمًا. للأقوى حط AI_MODEL=gpt-4o في Vercel
 
@@ -54,27 +73,73 @@ const PAGE_INBOX_APP_ID = "263902037430900";
 const _memHandoff = new Set();
 const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
 const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+const HAS_UPSTASH = !!(UPSTASH_URL && UPSTASH_TOKEN);
+// أمر Redis عبر Upstash REST بأسلوب POST (يتحمّل قيم طويلة زي تاريخ المحادثة).
 async function _upstash(cmd) {
-  const res = await fetch(`${UPSTASH_URL}/${cmd.map(encodeURIComponent).join("/")}`, {
-    headers: { authorization: `Bearer ${UPSTASH_TOKEN}` },
-  });
+  const res = await fetchT(UPSTASH_URL, {
+    method: "POST",
+    headers: { authorization: `Bearer ${UPSTASH_TOKEN}`, "content-type": "application/json" },
+    body: JSON.stringify(cmd),
+  }, 8000);
   if (!res.ok) throw new Error("upstash " + res.status);
   return (await res.json()).result;
 }
 const handedOff = {
   async has(id) {
-    if (UPSTASH_URL && UPSTASH_TOKEN) { try { return (await _upstash(["sismember", "liwa_handoff", id])) === 1; } catch (e) { console.error(e); } }
+    if (HAS_UPSTASH) { try { return (await _upstash(["sismember", "liwa_handoff", id])) === 1; } catch (e) { console.error(e); } }
     return _memHandoff.has(id);
   },
   async add(id) {
     _memHandoff.add(id);
-    if (UPSTASH_URL && UPSTASH_TOKEN) { try { await _upstash(["sadd", "liwa_handoff", id]); } catch (e) { console.error(e); } }
+    if (HAS_UPSTASH) { try { await _upstash(["sadd", "liwa_handoff", id]); } catch (e) { console.error(e); } }
   },
   async delete(id) {
     _memHandoff.delete(id);
-    if (UPSTASH_URL && UPSTASH_TOKEN) { try { await _upstash(["srem", "liwa_handoff", id]); } catch (e) { console.error(e); } }
+    if (HAS_UPSTASH) { try { await _upstash(["srem", "liwa_handoff", id]); } catch (e) { console.error(e); } }
   },
 };
+
+// ===== ذاكرة المحادثة: آخر رسائل لكل عميل (Upstash لو متوفر، وإلا ذاكرة مؤقتة) =====
+const _memHistory = new Map();          // id -> [{role, content}]
+const HISTORY_MAX = 12;                 // آخر 12 رسالة (6 لفّات) — كفاية للسياق
+const HISTORY_TTL = 6 * 60 * 60;        // تنتهي بعد 6 ساعات
+const historyStore = {
+  async get(id) {
+    if (HAS_UPSTASH) {
+      try { const v = await _upstash(["get", "liwa_hist:" + id]); if (v) return JSON.parse(v); } catch (e) { console.error("history get:", e.message); }
+    }
+    return _memHistory.get(id) || [];
+  },
+  async push(id, role, content) {
+    const arr = (await this.get(id)).concat([{ role, content }]).slice(-HISTORY_MAX);
+    _memHistory.set(id, arr);
+    if (HAS_UPSTASH) {
+      try { await _upstash(["set", "liwa_hist:" + id, JSON.stringify(arr), "EX", String(HISTORY_TTL)]); } catch (e) { console.error("history push:", e.message); }
+    }
+    return arr;
+  },
+  async clear(id) {
+    _memHistory.delete(id);
+    if (HAS_UPSTASH) { try { await _upstash(["del", "liwa_hist:" + id]); } catch (e) {} }
+  },
+};
+
+// ===== منع تكرار المعالجة: ميتا بتعيد إرسال نفس الرسالة لو اتأخرنا =====
+const _memSeen = new Set();
+async function alreadyProcessed(mid) {
+  if (!mid) return false;
+  if (HAS_UPSTASH) {
+    try {
+      // NX = يكتب بس لو مش موجود؛ لو رجع null يبقى اتعالج قبل كده
+      const r = await _upstash(["set", "liwa_seen:" + mid, "1", "NX", "EX", "86400"]);
+      return r === null;
+    } catch (e) { console.error("seen:", e.message); }
+  }
+  if (_memSeen.has(mid)) return true;
+  _memSeen.add(mid);
+  if (_memSeen.size > 5000) _memSeen.clear();
+  return false;
+}
 
 // ===== إعدادات تنبيه الأوردر على تيليجرام =====
 // اعمل بوت تيليجرام من @BotFather وخُد التوكن، وهات الـ chat id بتاعك.
@@ -104,6 +169,7 @@ const SYSTEM_PROMPT = `
 - **لو رسالة العميل مكتوبة بالعربية (أي لهجة) → ردّ باللهجة الإماراتية الأصيلة المؤدبة وثبّت عليها في كل الرد** — مش فصحى جافة ولا مصري. استخدم تعابير إماراتية طبيعية بذوق زي: "هلا والله"، "حيّاك الله"، "على راسي"، "تدلل"، "وايد زين"، "من عيوني"، "عساك بخير"، "يعطيك العافية"، "تبا/تبي"، "شرايك".
 - **ابعد تمامًا عن الكلمات الشامية:** ممنوع تقول "رح/راح تتحدد" (قول "بتتحدد")، "هالشي" (قول "هالشيء/الأمر ده")، "مش" (قول "مو")، "اتفضل" (قول "تفضّل")، "إحنا" (قول "احنا/نحن")، "منشان/عشان" استخدم "عشان" عادي، "بدي" (قول "أبي/أبغي"). خلّي اللهجة إماراتية ثابتة من أول الرد لآخره.
 - راجع صياغتك: تجنّب الأخطاء زي "بما تسطيع"، "سيكونوا"، "على أي الإزعاج" — اكتب عربي سليم.
+- **ثبات اللغة عبر المحادثة:** بعد ما تحدد لغة المحادثة من أول رسالة، **فضل عليها**. كلمة قصيرة زي "ok"، "tmam"، "thanks"، "تمام"، "👍" **مش سبب** تغيّر اللغة — كمّل بنفس لغة المحادثة. غيّر بس لو العميل كتب جملة كاملة واضحة باللغة التانية.
 - جُمل مختصرة ومصقولة ودافئة. **نوّع في خاتمة الرد** — ماتكررش نفس الجملة ("إذا عندك استفسار أنا هنا") في كل رسالة؛ خلّي الخاتمة طبيعية ومناسبة للسياق.
 
 **التنسيق (مهم جداً — القنوات مابتعرضش الماركداون):**
@@ -124,7 +190,7 @@ const SYSTEM_PROMPT = `
 
 **مثال على الأسلوب المطلوب** (للإلهام، مش للنسخ الحرفي):
 عميل: "عندكم مجدول؟"
-رد ممتاز: "أكيد! المجدول الفاخر عندنا من ألذ الأنواع وأفخمها 🌴 متوفر بأحجام مختلفة، السعر من AED40.25 للعلبة الصغيرة لحد AED132.25 للحجم الكبير. حابب أعرفلك الأحجام بالتفصيل، ولا تحبه ضمن علبة هدية أنيقة؟"
+رد ممتاز: "أكيد! المجدول الفاخر عندنا من ألذ الأنواع وأفخمها 🌴 متوفر بأحجام مختلفة، والسعر بيختلف حسب الحجم. حابب أعرفلك الأحجام وأسعارها بالتفصيل، ولا تحبه ضمن علبة هدية أنيقة؟" (ملاحظة: اقتبس أرقام الأسعار من الكتالوج الحيّ فقط، بصيغة "الرقم درهم".)
 
 ## مهارات البيع (أنت أشطر بياع — طبّقها في كل رد)
 هدفك مش بس ترد، هدفك **تبيع وتزوّد قيمة الطلب** بذكاء ولباقة، من غير إلحاح مزعج:
@@ -259,7 +325,7 @@ const SYSTEM_PROMPT = `
 2. **ممنوع الاختراع منعًا باتًا (مهم جداً):** لا تذكر أي منتج أو سعر أو **وزن** أو حجم أو نكهة إلا لو موجود **حرفيًا** في قائمة المنتجات أو الكتالوج الحيّ فوق. ممنوع تخمّن وزن علبة أو تخترع منتج (زي "قطعة تمر فاكيوم") أو تحط سعر من عندك. لو العميل سأل عن تفصيلة مش موجودة عندك (وزن، مكوّنات، توفر نكهة معينة)، قوله بصراحة إنك هتتأكد له ووجّهه للواتساب +971545317473 — بلاش تقول رقم أو وزن تقريبي من عندك.
 3. لو المنتج المطلوب "غير متوفر" (زي أرابيسك)، اعتذر واقترح بديل قريب منه.
 4. لو الاستفسار خارج نطاق المنتجات، أو حسّاس، أو العميل منزعج — اعتذر بلطف ووجّهه لفريق خدمة العملاء على الواتساب +971 54 531 7473.
-5. كن صادقاً ومختصراً. الأسعار نطاقات حسب الحجم/النكهة؛ لو العميل حدد الحجم أعطه السعر الأقرب من النطاق، ولو مش متأكد من الرقم الدقيق وجّهه للموقع أو الواتساب.
+5. كن صادقاً ومختصراً. لكل حجم سعر محدّد في الكتالوج (مافيش نطاقات ولا متوسطات) — اقتبس سعر الحجم اللي طلبه العميل حرفيًا زي ما هو. لو مش متأكد من الرقم الدقيق أو الحجم مش في الكتالوج، ماتخمّنش ووجّهه للموقع أو الواتساب.
 
 ## الطلب (اقرأ "قواعد حرجة #2" — ممنوع تدّعي إنك سجّلت الطلب)
 لما العميل يختار إنه يبعت بياناته عشان الفريق يكمّل معاه (مش الموقع ولا الفرع)، اجمع منه: المنتج + الحجم + الكمية + الاسم + العنوان + رقم التواصل. وبعدين اكتب له رسالة واضحة يشوفها بالصيغة دي بالظبط: **"سجّلت طلبك وبعته لفريقنا، وهيتواصلوا معك على الواتساب لتأكيده وإتمام الدفع والتوصيل (27 درهم، مجاني فوق 1000)."** — **ممنوع** تقول "تم الطلب" أو تعطي رقم طلب.
@@ -461,9 +527,38 @@ async function refreshCatalog() {
         if (names.length) { bestSellers = names; console.log(`Best sellers: ${names.length}`); }
       }
     } catch (e) { console.error("bestSellers fetch failed:", e); }
+    // نحفظ نسخة احتياطية من الكتالوج عشان الكولد-ستارت على Serverless يلاقي أسعار جاهزة
+    await saveCatalogSnapshot();
   } catch (e) {
     console.error("refreshCatalog failed:", e);
   }
+}
+
+// ===== نسخة احتياطية للكتالوج في Upstash — تحمي من هلوسة الأسعار وقت عطل الموقع/الفيد =====
+async function saveCatalogSnapshot() {
+  if (!HAS_UPSTASH || !liveCatalog) return;
+  try {
+    const snap = JSON.stringify({ liveCatalog, productImages, bestSellers, siteInfo, at: Date.now() });
+    await _upstash(["set", "liwa_catalog_snap", snap]); // بدون انتهاء — آخر نسخة ناجحة تفضل متاحة
+  } catch (e) { console.error("saveCatalogSnapshot:", e.message); }
+}
+async function loadCatalogSnapshot() {
+  if (!HAS_UPSTASH || liveCatalog) return false;
+  try {
+    const v = await _upstash(["get", "liwa_catalog_snap"]);
+    if (!v) return false;
+    const s = JSON.parse(v);
+    if (s.liveCatalog) {
+      liveCatalog = s.liveCatalog;
+      productImages = s.productImages || [];
+      bestSellers = s.bestSellers || [];
+      if (s.siteInfo && !siteInfo) siteInfo = s.siteInfo;
+      liveCatalogUpdatedAt = new Date(s.at || Date.now());
+      console.log("Catalog loaded from snapshot");
+      return true;
+    }
+  } catch (e) { console.error("loadCatalogSnapshot:", e.message); }
+  return false;
 }
 refreshCatalog();                               // عند التشغيل
 setInterval(refreshCatalog, 6 * 60 * 60 * 1000); // كل 6 ساعات
@@ -513,12 +608,21 @@ async function ensureFresh() {
     _refreshing = true;
     try { await refreshCatalog(); if (!siteInfo) await refreshSiteInfo(); }
     finally { _refreshing = false; }
+    // لو الموقع/الفيد فشل والكتالوج لسه فاضي، نحمّل آخر نسخة محفوظة بدل ما نشتغل من غير أسعار
+    if (!liveCatalog) await loadCatalogSnapshot();
   }
 }
 
+// تعليمات "وضع مؤقت" تتحط لو مفيش كتالوج إطلاقًا — تمنع الموديل يخترع أسعار
+const DEGRADED_NOTE =
+  `\n\n## ⚠️ وضع مؤقت — الكتالوج الحيّ مش متاح دلوقتي\n` +
+  `مقدرتش تحمّل قائمة الأسعار الحيّة. **ممنوع منعًا باتًا** تقول أي سعر أو تأكّد توفّر منتج معيّن من ذاكرتك. ` +
+  `جاوب على الأسئلة العامة (التوصيل، الرسوم 27 درهم، الفروع، المواعيد، السياسات) بشكل طبيعي، ` +
+  `ولأي سؤال عن سعر أو توفّر منتج قول بلطف إنك بتتأكد من الأسعار المحدّثة ووجّه العميل للموقع liwadates.com أو الواتساب +971545317473.`;
+
 // يبني الـ system prompt مع الكتالوج الحيّ لو متوفر
 function buildSystemPrompt() {
-  if (!liveCatalog) return SYSTEM_PROMPT;
+  if (!liveCatalog) return SYSTEM_PROMPT + DEGRADED_NOTE;
   let out =
     SYSTEM_PROMPT +
     `\n\n## الكتالوج الحيّ (محدّث تلقائيًا — لكل منتج سعر كل حجم بالضبط + رابطه)\n` +
@@ -547,7 +651,7 @@ function buildSystemPrompt() {
 async function openaiReply(history) {
   // history = [{role:'user'|'assistant', content:'...'}, ...]
   await ensureFresh(); // يضمن إن الكتالوج محمّل (خصوصًا على Serverless)
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+  const res = await fetchT("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -555,10 +659,10 @@ async function openaiReply(history) {
     },
     body: JSON.stringify({
       model: AI_MODEL,
-      max_tokens: 500,
+      max_tokens: AI_MAX_TOKENS,
       messages: [{ role: "system", content: buildSystemPrompt() }, ...history],
     }),
-  });
+  }, 30000);
   const data = await res.json();
   if (data.choices && data.choices[0] && data.choices[0].message) {
     return data.choices[0].message.content || "";
@@ -646,9 +750,13 @@ const IMG_INTENT = /صور[ةه]?|بالصوره|picture|image|photo/i; // صو�
 // مواضيع مش عن منتج معيّن — مايتبعتش معاها صورة/رابط منتج عشوائي
 // (بننتبه إننا مانحطش كلمات ممكن تظهر في رد منتج عادي زي "الضريبة" أو "الدفع")
 const NON_PRODUCT_TOPIC = /توصيل|الشحن|شحن|فرع|فروع|مواعيد|ساعات العمل|استرجاع/;
+// عبارات بتقول إن المنتج مش متوفر — ساعتها ماينفعش نرفق صورته أو لينكه (بيبان غلط للعميل)
+const UNAVAILABLE_HINT = /مش متوفر|غير متوفر|مش موجود|مش من منتجاتنا|مو متوفر|مو موجود|نفد|خلص المخزون|not available|out of stock|unavailable|don'?t have|do not have/i;
 // بيرجّع منتجات الرد (صورة + رابط) عشان نرفقهم تلقائيًا. حتمي 100% مش معتمد على الموديل.
 function autoProductEntries(text, existing) {
   if (!text) return [];
+  // لو الرد بيقول إن حاجة مش متوفرة، ماترفقش أي صورة/لينك منتج (إلا لو الموديل نفسه حط صورة صريحة)
+  if (UNAVAILABLE_HINT.test(text) && !(existing && existing.length)) return [];
   const explicit = (existing && existing.length) || IMG_INTENT.test(text); // طلب صورة صريح
   // لو الرد عن موضوع مش منتج (توصيل/شحن/فروع/دفع/سياسات) ومفيش طلب صورة صريح → ماتحطش أي منتج
   if (!explicit && NON_PRODUCT_TOPIC.test(text)) return [];
@@ -687,6 +795,10 @@ function parseReply(raw, source) {
   if (oStart !== -1 && oEnd !== -1 && oEnd > oStart) {
     order = text.slice(oStart + ORDER_OPEN.length, oEnd).trim();
     text = (text.slice(0, oStart) + text.slice(oEnd + ORDER_CLOSE.length)).trim();
+  } else if (oStart !== -1) {
+    // بلوك أوردر مقطوع (الرد اتقصّ قبل [[/ORDER]]) — نشيله من رسالة العميل ونطلّع تنبيه بالمتاح
+    order = text.slice(oStart + ORDER_OPEN.length).trim() || "(بلوك أوردر غير مكتمل — راجع المحادثة)";
+    text = text.slice(0, oStart).trim();
   }
   const handoff = text.includes(HANDOFF_TAG);
   text = text.replace(HANDOFF_TAG, "").trim();
@@ -706,6 +818,14 @@ function parseReply(raw, source) {
     .replace(/^\s*#{1,6}\s*/gm, "") // عناوين #
     .replace(/`/g, "")           // كود
     .trim();
+
+  // شبكة أمان: نشيل أي بقايا علامات (مقطوعة أو مكررة) عشان العميل مايشوفهاش أبداً
+  text = text
+    .replace(/\[\[\s*\/?\s*ORDER\s*\]\]/gi, "")
+    .replace(/\[\[\s*HANDOFF\s*\]\]/gi, "")
+    .replace(/\[\[\s*IMG\s*:[^\]]*\]?\]?/gi, "") // كامل أو مقطوع
+    .replace(/\[\[[^\]]*$/g, "")                 // أي علامة مفتوحة اتقصّت في الآخر
+    .replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
 
   // UTM: أي لينك لموقع ليوا يطلع للعميل نحط عليه تتبّع (حسب القناة)
   text = utmizeText(text, source);
@@ -769,12 +889,19 @@ async function downloadUrl(url) {
   } catch (e) { console.error("downloadUrl failed:", e); return null; }
 }
 
-// ===== دالة تسأل OpenAI برسالة واحدة (تستخدمها قنوات ميتا) =====
-async function askAI(userMessage, source) {
+// ===== دالة تسأل OpenAI مع ذاكرة المحادثة (تستخدمها قنوات ميتا) =====
+// convId = معرّف العميل (عشان نجيب/نحفظ تاريخه). لو مش موجود بترجع لرسالة واحدة.
+async function askAI(userMessage, source, convId) {
   try {
-    const raw = await openaiReply([{ role: "user", content: userMessage }]);
+    let history;
+    if (convId) history = await historyStore.push(convId, "user", userMessage);
+    else history = [{ role: "user", content: userMessage }];
+    const raw = await openaiReply(history);
     if (raw === null) return { text: "معلش حصل خطأ بسيط، ممكن تبعت تاني؟", handoff: false, order: null };
-    return parseReply(raw, source);
+    const parsed = parseReply(raw, source);
+    // نحفظ رد البوت في الذاكرة عشان اللفّة الجاية يبقى فيه سياق
+    if (convId && parsed.text) await historyStore.push(convId, "assistant", parsed.text);
+    return parsed;
   } catch (e) {
     console.error("askAI failed:", e);
     return { text: "معلش حصل خطأ بسيط، ممكن تبعت تاني؟", handoff: false, order: null };
@@ -801,10 +928,25 @@ async function notifyOwner(message) {
   }
 }
 
+// مطابقة كلمة كـ"كلمة كاملة" (مش جزء من كلمة أطول) — تقلّل الإنذارات الكاذبة.
+// بنعتبر الحدود = بداية/نهاية النص أو أي حرف مش من حروف اللغة/الأرقام.
+function matchesWord(text, kw) {
+  const t = (text || "").toLowerCase();
+  const k = kw.toLowerCase();
+  let i = 0;
+  while ((i = t.indexOf(k, i)) !== -1) {
+    const before = i === 0 ? "" : t[i - 1];
+    const after = i + k.length >= t.length ? "" : t[i + k.length];
+    const isLtr = (c) => c && /[\p{L}\p{N}]/u.test(c);
+    if (!isLtr(before) && !isLtr(after)) return true;
+    i += k.length;
+  }
+  return false;
+}
+
 // هل رسالة العميل نفسها فيها طلب صريح لموظف بشري؟
 function wantsHuman(text) {
-  const t = (text || "").toLowerCase();
-  return HANDOFF_KEYWORDS.some((k) => t.includes(k));
+  return HANDOFF_KEYWORDS.some((k) => matchesWord(text, k));
 }
 
 // شبكة أمان: كلمات تدل على شكوى/مشكلة/طلب كبير → تحويل تلقائي لموظف حتى لو الموديل ماحطش العلامة
@@ -817,8 +959,7 @@ const ESCALATION_KEYWORDS = [
   "refund", "return", "damaged", "wrong item", "late", "delayed", "hasn't arrived", "bulk", "wholesale", "corporate", "invoice", "complaint",
 ];
 function needsEscalation(text) {
-  const t = (text || "").toLowerCase();
-  return ESCALATION_KEYWORDS.some((k) => t.includes(k));
+  return ESCALATION_KEYWORDS.some((k) => matchesWord(text, k));
 }
 
 // شبكة أمان للأوردر: لو العميل دّى رقم تواصل في سياق طلب، والموديل ماطلّعش [[ORDER]]،
@@ -842,35 +983,32 @@ function detectOrder(history) {
   );
 }
 
+// التوكن بيتبعت في الهيدر (مش في الـ URL) عشان مايتسجّلش في اللوجز/البروكسيات
+const META_GRAPH = "https://graph.facebook.com/v21.0";
+function metaHeaders() {
+  return { "content-type": "application/json", authorization: `Bearer ${PAGE_ACCESS_TOKEN}` };
+}
+
 // ===== إرسال رد للفيسبوك/انستجرام =====
 async function sendMessenger(recipientId, text) {
-  await fetch(
-    `https://graph.facebook.com/v21.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        recipient: { id: recipientId },
-        message: { text },
-      }),
-    }
-  );
+  await fetchT(`${META_GRAPH}/me/messages`, {
+    method: "POST",
+    headers: metaHeaders(),
+    body: JSON.stringify({ recipient: { id: recipientId }, message: { text } }),
+  });
 }
 
 // إرسال صورة عبر ماسنجر/انستجرام
 async function sendMessengerImage(recipientId, url) {
   try {
-    await fetch(
-      `https://graph.facebook.com/v21.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          recipient: { id: recipientId },
-          message: { attachment: { type: "image", payload: { url, is_reusable: true } } },
-        }),
-      }
-    );
+    await fetchT(`${META_GRAPH}/me/messages`, {
+      method: "POST",
+      headers: metaHeaders(),
+      body: JSON.stringify({
+        recipient: { id: recipientId },
+        message: { attachment: { type: "image", payload: { url, is_reusable: true } } },
+      }),
+    });
   } catch (e) { console.error("sendMessengerImage failed:", e); }
 }
 
@@ -879,18 +1017,15 @@ async function sendMessengerImage(recipientId, url) {
 // شرط: لازم تفعّل Handover Protocol في إعدادات الـ App وتخلي "Page Inbox" هو الـ Secondary Receiver.
 async function passToHuman(senderId) {
   try {
-    await fetch(
-      `https://graph.facebook.com/v21.0/me/pass_thread_control?access_token=${PAGE_ACCESS_TOKEN}`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          recipient: { id: senderId },
-          target_app_id: PAGE_INBOX_APP_ID,
-          metadata: "handoff by AI agent",
-        }),
-      }
-    );
+    await fetchT(`${META_GRAPH}/me/pass_thread_control`, {
+      method: "POST",
+      headers: metaHeaders(),
+      body: JSON.stringify({
+        recipient: { id: senderId },
+        target_app_id: PAGE_INBOX_APP_ID,
+        metadata: "handoff by AI agent",
+      }),
+    });
   } catch (e) {
     console.error("passToHuman failed:", e);
   }
@@ -898,43 +1033,41 @@ async function passToHuman(senderId) {
 
 // ===== إرسال رد للواتساب =====
 async function sendWhatsApp(to, text) {
-  await fetch(
-    `https://graph.facebook.com/v21.0/${WHATSAPP_PHONE_ID}/messages`,
-    {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${WHATSAPP_TOKEN}`,
-      },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        to,
-        text: { body: text },
-      }),
-    }
-  );
+  await fetchT(`${META_GRAPH}/${WHATSAPP_PHONE_ID}/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${WHATSAPP_TOKEN}` },
+    body: JSON.stringify({ messaging_product: "whatsapp", to, text: { body: text } }),
+  });
 }
 
 // إرسال صورة عبر واتساب
 async function sendWhatsAppImage(to, url) {
   try {
-    await fetch(
-      `https://graph.facebook.com/v21.0/${WHATSAPP_PHONE_ID}/messages`,
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${WHATSAPP_TOKEN}`,
-        },
-        body: JSON.stringify({
-          messaging_product: "whatsapp",
-          to,
-          type: "image",
-          image: { link: url },
-        }),
-      }
-    );
+    await fetchT(`${META_GRAPH}/${WHATSAPP_PHONE_ID}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${WHATSAPP_TOKEN}` },
+      body: JSON.stringify({ messaging_product: "whatsapp", to, type: "image", image: { link: url } }),
+    });
   } catch (e) { console.error("sendWhatsAppImage failed:", e); }
+}
+
+// ===== التحقق من توقيع ميتا (X-Hub-Signature-256) — يمنع أي حد يبعت رسائل مزيّفة =====
+function verifyMetaSignature(req) {
+  if (!APP_SECRET) { console.warn("⚠️ APP_SECRET مش متعرّف — تخطّي التحقق من التوقيع (حطّه للأمان)"); return true; }
+  const sig = req.get("x-hub-signature-256") || "";
+  if (!sig.startsWith("sha256=") || !req.rawBody) return false;
+  const expected = "sha256=" + crypto.createHmac("sha256", APP_SECRET).update(req.rawBody).digest("hex");
+  try {
+    const a = Buffer.from(sig), b = Buffer.from(expected);
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+  } catch { return false; }
+}
+
+// ===== تنبيه الفريق عند أي تحويل لموظف (على كل القنوات) =====
+async function notifyHandoff(channel, id, userText) {
+  await notifyOwner(
+    `🧑‍💼 تحويل لموظف — ${channel}\nالعميل: ${id}\nآخر رسالة: ${String(userText || "").slice(0, 300)}\n\nافتح المحادثة في Business Suite ورُدّ عليه.`
+  );
 }
 
 // ===== 1) فحص الـ Webhook (ميتا بتعمله مرة عند الربط) =====
@@ -952,53 +1085,73 @@ app.get("/webhook", (req, res) => {
 
 // ===== 2) استقبال الرسائل =====
 app.post("/webhook", async (req, res) => {
+  // تحقق من توقيع ميتا الأول — لو غلط نرفض (بس لو APP_SECRET متعرّف)
+  if (!verifyMetaSignature(req)) {
+    console.warn("Rejected webhook: bad signature");
+    return res.sendStatus(403);
+  }
   const body = req.body;
 
   try {
     // --- فيسبوك و انستجرام ---
     if (body.object === "page" || body.object === "instagram") {
+      const channel = body.object === "instagram" ? "instagram" : "messenger";
+      const channelAr = body.object === "instagram" ? "انستجرام" : "فيسبوك";
       for (const entry of body.entry || []) {
         for (const event of entry.messaging || []) {
-          if (event.message && !event.message.is_echo) {
-            const senderId = event.sender.id;
+          if (!event.message || event.message.is_echo) continue;
+          const senderId = event.sender.id;
 
-            // لو المحادثة اتحوّلت لموظف قبل كده، البوت يسكت
-            if (await handedOff.has(senderId)) continue;
+          // تجاهل الرسالة لو اتعالجت قبل كده (ميتا بتعيد الإرسال لو اتأخرنا)
+          if (await alreadyProcessed(event.message.mid)) continue;
 
-            // نجيب نص الرسالة — سواء نصية أو نحوّل الرسالة الصوتية لنص
-            let userText = event.message.text || null;
-            if (!userText && Array.isArray(event.message.attachments)) {
-              const au = event.message.attachments.find((a) => a.type === "audio" && a.payload && a.payload.url);
-              if (au) {
-                const buf = await downloadUrl(au.payload.url);
-                if (buf) userText = await transcribeAudio(buf, "audio.mp4", "audio/mp4");
-              }
+          // لو المحادثة اتحوّلت لموظف قبل كده، البوت يسكت
+          if (await handedOff.has(senderId)) continue;
+
+          // نجيب نص الرسالة — سواء نصية أو نحوّل الرسالة الصوتية لنص
+          let userText = event.message.text || null;
+          let hadAttachment = false;
+          if (!userText && Array.isArray(event.message.attachments) && event.message.attachments.length) {
+            hadAttachment = true;
+            const au = event.message.attachments.find((a) => a.type === "audio" && a.payload && a.payload.url);
+            if (au) {
+              const buf = await downloadUrl(au.payload.url);
+              if (buf) userText = await transcribeAudio(buf, "audio.mp4", "audio/mp4");
             }
-            if (!userText) continue;
+          }
 
-            // العميل طلب موظف صراحةً → تحويل فوري
-            if (wantsHuman(userText)) {
-              await sendMessenger(senderId, HANDOFF_MESSAGE);
+          // مرفق مش نصي (صورة/ستيكر/ملف) أو صوت مش مفهوم → ماننفعش نسيب العميل من غير رد
+          if (!userText) {
+            if (hadAttachment) {
+              await sendMessenger(senderId, "استلمنا رسالتك 🙏 بحوّلك لأحد موظفينا يقدر يشوفها ويساعدك حالاً.");
               await passToHuman(senderId);
               await handedOff.add(senderId);
-              console.log("Handoff (keyword) → human:", senderId);
-              continue;
+              await notifyHandoff(channelAr, senderId, "[مرفق غير نصي — صورة/صوت/ملف]");
             }
+            continue;
+          }
 
-            const reply = await askAI(userText, body.object === "instagram" ? "instagram" : "messenger");
-            await sendMessenger(senderId, reply.text);
-            if (reply.images) for (const u of reply.images) await sendMessengerImage(senderId, u);
-            if (reply.order) {
-              const channel = body.object === "instagram" ? "انستجرام" : "فيسبوك";
-              await notifyOwner(
-                `🌴 أوردر جديد — ${channel}\n\n${reply.order}\n\nمعرّف العميل: ${senderId}`
-              );
-            }
-            if (reply.handoff || needsEscalation(userText)) {
-              await passToHuman(senderId);
-              await handedOff.add(senderId);
-              console.log("Handoff → human:", senderId);
-            }
+          // العميل طلب موظف صراحةً → تحويل فوري
+          if (wantsHuman(userText)) {
+            await sendMessenger(senderId, HANDOFF_MESSAGE);
+            await passToHuman(senderId);
+            await handedOff.add(senderId);
+            await notifyHandoff(channelAr, senderId, userText);
+            console.log("Handoff (keyword) → human:", senderId);
+            continue;
+          }
+
+          const reply = await askAI(userText, channel, senderId);
+          if (reply.text) await sendMessenger(senderId, reply.text);
+          if (reply.images) for (const u of reply.images) await sendMessengerImage(senderId, u);
+          if (reply.order) {
+            await notifyOwner(`🌴 أوردر جديد — ${channelAr}\n\n${reply.order}\n\nمعرّف العميل: ${senderId}`);
+          }
+          if (reply.handoff || needsEscalation(userText)) {
+            await passToHuman(senderId);
+            await handedOff.add(senderId);
+            await notifyHandoff(channelAr, senderId, userText);
+            console.log("Handoff → human:", senderId);
           }
         }
       }
@@ -1013,36 +1166,50 @@ app.post("/webhook", async (req, res) => {
           const messages = change.value?.messages || [];
           for (const msg of messages) {
             const from = msg.from;
-            if (!from || await handedOff.has(from)) continue;
+            if (!from) continue;
+            // تجاهل الرسائل المكررة
+            if (await alreadyProcessed(msg.id)) continue;
+            if (await handedOff.has(from)) continue;
 
             // نجيب نص الرسالة — نصية أو نحوّل الرسالة الصوتية (voice note) لنص
             let userText = null;
+            let nonText = false;
             if (msg.type === "text") {
               userText = msg.text.body;
             } else if ((msg.type === "audio" || msg.type === "voice") && msg[msg.type] && msg[msg.type].id) {
               const media = await downloadWhatsAppMedia(msg[msg.type].id);
               if (media) userText = await transcribeAudio(media.buffer, "audio.ogg", media.mime);
               if (!userText) { await sendWhatsApp(from, "ما قدرت أفهم الرسالة الصوتية، ممكن تكتبها أو تبعتها تاني؟ 🙏"); continue; }
+            } else {
+              // صورة/ستيكر/مستند/موقع… — نعترف ونحوّل لموظف بدل الصمت
+              nonText = true;
+            }
+
+            if (nonText) {
+              await sendWhatsApp(from, "استلمنا رسالتك 🙏 بحوّلك لأحد موظفينا يقدر يشوفها ويساعدك حالاً.");
+              await handedOff.add(from);
+              await notifyHandoff("واتساب", from, "[مرفق غير نصي — صورة/صوت/مستند]");
+              continue;
             }
             if (!userText) continue;
 
             if (wantsHuman(userText)) {
               await sendWhatsApp(from, HANDOFF_MESSAGE);
               await handedOff.add(from);
+              await notifyHandoff("واتساب", from, userText);
               console.log("WhatsApp handoff (keyword):", from);
               continue;
             }
 
-            const reply = await askAI(userText, "whatsapp");
-            await sendWhatsApp(from, reply.text);
+            const reply = await askAI(userText, "whatsapp", from);
+            if (reply.text) await sendWhatsApp(from, reply.text);
             if (reply.images) for (const u of reply.images) await sendWhatsAppImage(from, u);
             if (reply.order) {
-              await notifyOwner(
-                `🌴 أوردر جديد — واتساب\n\n${reply.order}\n\nرقم العميل: ${from}`
-              );
+              await notifyOwner(`🌴 أوردر جديد — واتساب\n\n${reply.order}\n\nرقم العميل: ${from}`);
             }
             if (reply.handoff || needsEscalation(userText)) {
               await handedOff.add(from);
+              await notifyHandoff("واتساب", from, userText);
               console.log("WhatsApp handoff:", from);
             }
           }
@@ -1060,12 +1227,11 @@ app.post("/webhook", async (req, res) => {
 // افتح في المتصفح: https://<your-server>/release?id=USER_ID  → البوت يرجع يرد على العميل ده.
 // (اختياري: حط ADMIN_KEY في المتغيرات وضيفه ?key=... عشان تحمي الرابط)
 app.get("/release", async (req, res) => {
+  if (req.query.key !== ADMIN_KEY) return res.status(403).send("forbidden — add ?key=ADMIN_KEY");
   const id = req.query.id;
-  if (process.env.ADMIN_KEY && req.query.key !== process.env.ADMIN_KEY) {
-    return res.status(403).send("forbidden");
-  }
   if (id && (await handedOff.has(id))) {
     await handedOff.delete(id);
+    await historyStore.clear(id); // نبدأ سياق نظيف بعد رجوع البوت
     return res.send(`تم إرجاع المحادثة ${id} للبوت ✔`);
   }
   res.send("المحادثة مش متحوّلة أصلاً أو الـ id غلط.");
@@ -1076,7 +1242,7 @@ app.get("/release", async (req, res) => {
 // محمية بمفتاح بسيط (نفس META_VERIFY_TOKEN) عشان محدش يستهلك رصيدك.
 // ملاحظة: احذف الباب ده بعد ما تخلص تجربة لو حابب.
 app.get("/test", async (req, res) => {
-  if (req.query.key !== META_VERIFY_TOKEN) {
+  if (req.query.key !== ADMIN_KEY) {
     return res.status(403).send("forbidden — add ?key=YOUR_VERIFY_TOKEN");
   }
   const msg = req.query.msg;
@@ -1088,7 +1254,7 @@ app.get("/test", async (req, res) => {
 // ===== واجهة شات للتجربة =====
 // افتح: https://<your-server>/chat?key=liwa2026
 app.get("/chat", (req, res) => {
-  if (req.query.key !== META_VERIFY_TOKEN) {
+  if (req.query.key !== ADMIN_KEY) {
     return res.status(403).send("forbidden — استخدم /chat?key=YOUR_VERIFY_TOKEN");
   }
   res.set("content-type", "text/html; charset=utf-8").send(CHAT_PAGE);
@@ -1096,7 +1262,7 @@ app.get("/chat", (req, res) => {
 
 // API تحويل الصوت لنص (لصفحة التجربة): يستقبل ملف صوتي ويرجّع النص
 app.post("/api/transcribe", express.raw({ type: "*/*", limit: "12mb" }), async (req, res) => {
-  if (req.query.key !== META_VERIFY_TOKEN) return res.status(403).json({ error: "forbidden" });
+  if (req.query.key !== ADMIN_KEY) return res.status(403).json({ error: "forbidden" });
   try {
     if (!req.body || !req.body.length) return res.json({ text: "" });
     const mime = req.headers["content-type"] || "audio/webm";
@@ -1111,7 +1277,7 @@ app.post("/api/transcribe", express.raw({ type: "*/*", limit: "12mb" }), async (
 
 // API المحادثة (بذاكرة): يستقبل تاريخ الرسائل ويرجّع رد الوكيل
 app.post("/api/chat", async (req, res) => {
-  if (req.query.key !== META_VERIFY_TOKEN) return res.status(403).json({ error: "forbidden" });
+  if (req.query.key !== ADMIN_KEY) return res.status(403).json({ error: "forbidden" });
   try {
     const history = Array.isArray(req.body.messages) ? req.body.messages.slice(-20) : [];
     const raw = await openaiReply(history);
@@ -1290,7 +1456,7 @@ const CHAT_PAGE = `<!DOCTYPE html>
 
 // ===== تشخيص: عرض جدول الأسعار الفعلي اللي البوت بيقتبس منه =====
 app.get("/catalog", (req, res) => {
-  if (req.query.key !== META_VERIFY_TOKEN) return res.status(403).send("forbidden");
+  if (req.query.key !== ADMIN_KEY) return res.status(403).send("forbidden");
   res.set("content-type", "text/plain; charset=utf-8").send(
     "آخر تحديث: " + (liveCatalogUpdatedAt ? liveCatalogUpdatedAt.toISOString() : "لم يُحمّل بعد") +
     " | أسعار الفيد: " + Object.keys(feedPrices).length +
@@ -1300,7 +1466,7 @@ app.get("/catalog", (req, res) => {
 
 // تشخيص OpenAI: نجرّب نداء ونرجّع السبب الحقيقي لأي خطأ
 app.get("/aidebug", async (req, res) => {
-  if (req.query.key !== META_VERIFY_TOKEN) return res.status(403).json({ error: "forbidden" });
+  if (req.query.key !== ADMIN_KEY) return res.status(403).json({ error: "forbidden" });
   const model = req.query.model || AI_MODEL;
   const out = { model, hasKey: !!OPENAI_API_KEY };
   try {
@@ -1324,7 +1490,7 @@ app.get("/aidebug", async (req, res) => {
 
 // تشخيص الفيد: نشوف السيرفر بيستقبل إيه
 app.get("/feeddebug", async (req, res) => {
-  if (req.query.key !== META_VERIFY_TOKEN) return res.status(403).json({ error: "forbidden" });
+  if (req.query.key !== ADMIN_KEY) return res.status(403).json({ error: "forbidden" });
   const info = {};
   try {
     const r = await fetch(FEED_URL, { headers: BROWSER_HEADERS });
@@ -1348,7 +1514,7 @@ app.get("/feeddebug", async (req, res) => {
 
 // إجبار تحديث الكتالوج والأسعار فورًا (يتخطى الكاش) — للاستخدام بعد تحديث الفيد
 app.get("/refresh", async (req, res) => {
-  if (req.query.key !== META_VERIFY_TOKEN) return res.status(403).send("forbidden");
+  if (req.query.key !== ADMIN_KEY) return res.status(403).send("forbidden");
   await refreshCatalog();
   res.set("content-type", "text/plain; charset=utf-8").send(
     "تم التحديث ✔ | أسعار الفيد: " + Object.keys(feedPrices).length +

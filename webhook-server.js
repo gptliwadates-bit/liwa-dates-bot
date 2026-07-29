@@ -611,10 +611,13 @@ function deterministicImages(text, lenient) {
     }
     return [];
   }
-  // الوضع الصريح (العميل طالب صور): نضيف صورة **ممثّلة** لكل منتج/خط مذكور.
-  // نجمّع المنتجات حسب نفس مجموعة الكلمات المطابقة، ونختار الأساسي الأقصر لكل مجموعة.
+  // الوضع الصريح (العميل طالب صور): نضيف صورة **ممثّلة واحدة لكل خط منتج** مذكور.
+  // مفتاح الخط = أندر كلمة مطابقة (الأقل تكرارًا = الأكثر تمييزًا)، عشان كل الأحجام/النكهات لنفس الخط تبقى صورة واحدة.
   const groups = {};
-  for (const s of scored) { const key = [...s.matched].sort().join("|"); (groups[key] = groups[key] || []).push(s); }
+  for (const s of scored) {
+    const lineKey = s.matched.slice().sort((a, b) => df[a] - df[b])[0];
+    (groups[lineKey] = groups[lineKey] || []).push(s);
+  }
   for (const key of Object.keys(groups)) {
     const g = groups[key];
     if (g.some((s) => seen.has(s.p.img))) continue; // اتضاف قبل كده (كلمة فريدة)

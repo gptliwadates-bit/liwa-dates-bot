@@ -781,15 +781,19 @@ function deterministicImages(text, lenient) {
   if (!scored.length) return [];
   const cap = lenient ? 5 : 3;
   const out = [], seen = new Set(), coveredLines = new Set();
+  const exactTokens = new Set(); // كل الكلمات اللي طابقت في تطابق مؤكّد (df==1)
+  let hadExact = false;
 
   // 1) تطابق مؤكّد: منتج طابق كلمة **فريدة** ليه (df==1، زي "مكاديميا" أو مقاس مميّز).
-  //    الأكتر تطابقًا الأول عشان المتغيّر الأخص يكسب جوّه نفس الخط، وبعد كده نقفل الخط.
+  //    الأكتر تطابقًا الأول عشان المتغيّر الأخص يكسب. بنسمح بأكتر من نكهة لو العميل سمّاها صراحة.
   const uniques = scored
     .filter((s) => s.matched.some((w) => df[w] === 1))
     .sort((a, b) => b.matched.length - a.matched.length);
   for (const s of uniques) {
-    if (coveredLines.has(s.line) || seen.has(s.p.img)) continue;
+    if (seen.has(s.p.img)) continue;
     out.push(s.p); seen.add(s.p.img); coveredLines.add(s.line);
+    s.matched.forEach((w) => exactTokens.add(w));
+    hadExact = true;
     if (out.length >= cap) return out;
   }
 
@@ -810,6 +814,9 @@ function deterministicImages(text, lenient) {
     if (coveredLines.has(s.line)) continue;                 // الخط اتغطّى بنكهة مميّزة فوق
     const distinctive = s.matched.filter((w) => !LINE_GENERIC.has(w));
     if (!distinctive.length) continue;                      // مطابقة بكلمة عامة بس (فاخر) → تجاهل
+    // لو العميل حدّد نكهة مؤكّدة، مانضيفش خط تاني طابق **بس** كلمات عائلية مشتركة اتستهلكت
+    // (زي "كرانشلي" اللي بيتكرر في أكتر من منتج) — ده سبب طلوع صور منتجات غلط.
+    if (hadExact && distinctive.every((w) => exactTokens.has(w))) continue;
     (groups[s.line] = groups[s.line] || []).push(s);
   }
   for (const key of Object.keys(groups)) {

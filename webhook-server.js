@@ -315,6 +315,7 @@ const STORE_API = "https://liwadates.com/wp-json/wc/store/v1/products";
 let liveCatalog = "";            // نص الكتالوج المحدّث من الموقع
 let liveCatalogUpdatedAt = null; // آخر وقت تحديث
 let productImages = [];          // [{core, img}] لمطابقة اسم المنتج بصورته (بيع بالصورة تلقائي)
+let bestSellers = [];            // الأكثر مبيعًا (أسماء) — من ترتيب popularity، بدون مواد التعبئة
 
 function hasArabic(s) { return /[؀-ۿ]/.test(s || ""); }
 function fmtMoney(minor) { return (Number(minor) / 100).toFixed(2); }
@@ -400,6 +401,26 @@ async function refreshCatalog() {
       liveCatalogUpdatedAt = new Date();
       console.log(`Catalog refreshed: ${lines.length} products @ ${liveCatalogUpdatedAt.toISOString()}`);
     }
+    // الأكثر مبيعًا: ترتيب popularity = إجمالي المبيعات، مع استبعاد مواد التعبئة والمزارع
+    try {
+      const popRes = await fetch(STORE_API + "?orderby=popularity&order=desc&per_page=40");
+      if (popRes.ok) {
+        const pop = await popRes.json();
+        const PACK = /صندوق تخزين|كرتون|تخزين|تجفيف|درج|صينية تجفيف|tray|carton|storage|packing|تعبئة|تغليف|مزيرعة|مزرعة|مواد/i;
+        const names = [];
+        for (const p of Array.isArray(pop) ? pop : []) {
+          const nm = (p.name || "").trim();
+          if (!nm || !hasArabic(nm) || names.includes(nm)) continue;
+          if (p.is_in_stock === false) continue;
+          const cats = (p.categories || []).map((c) => c.name || "").join(" ");
+          if (/packing|farmer/i.test(cats)) continue;   // فئة مواد التعبئة للمزارعين
+          if (PACK.test(nm)) continue;                   // أسماء مواد التخزين/التجفيف
+          names.push(nm);
+          if (names.length >= 8) break;
+        }
+        if (names.length) { bestSellers = names; console.log(`Best sellers: ${names.length}`); }
+      }
+    } catch (e) { console.error("bestSellers fetch failed:", e); }
   } catch (e) {
     console.error("refreshCatalog failed:", e);
   }
@@ -463,6 +484,14 @@ function buildSystemPrompt() {
     `\n\n## الكتالوج الحيّ (محدّث تلقائيًا من liwadates.com — لكل منتج سعر كل حجم بالضبط + رابطه)\n` +
     `اعتمد على الأسعار دي فقط. اقتبس سعر الحجم اللي يطلبه العميل حرفيًا. ولو حبّ يطلب، اعطِه الرابط.\n` +
     liveCatalog;
+  if (bestSellers.length) {
+    out +=
+      `\n\n## الأكثر مبيعًا عندنا (مرتّبة حسب المبيعات الفعلية — محدّثة تلقائيًا)\n` +
+      bestSellers.map((n, i) => `${i + 1}) ${n}`).join("\n") +
+      `\n\n**قاعدة الترشيح:** لما العميل يسأل "شو أكثر شي مبيعًا؟" أو "شو تنصحني؟" أو "أفضل منتجاتكم؟" أو "الأكثر شعبية؟"، ` +
+      `اعرض **من 3 لـ 5 منتجات** من قائمة الأكثر مبيعًا دي (مش منتج واحد، ومش تمر المجدول بشكل افتراضي)، ` +
+      `بترتيبها، مع سعر كل واحد من الكتالوج وسؤال إغلاق. لو العميل حدّد مناسبة/فئة (ضيافة، هدية، يومي)، رجّح الأنسب منها.`;
+  }
   if (siteInfo) {
     out += `\n\n## معلومات إضافية من صفحات الموقع (محدّثة تلقائيًا — استخدمها للإجابة عن الأسئلة العامة)\n${siteInfo}`;
   }

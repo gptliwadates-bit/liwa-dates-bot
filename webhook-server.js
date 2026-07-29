@@ -32,6 +32,12 @@ app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
 const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
+// دعم أكتر من صفحة فيسبوك: PAGE_TOKENS = JSON يربط معرّف الصفحة/الانستجرام بالتوكن بتاعه.
+// مثال: {"577469398950886":"token_A","106801345855464":"token_B"}. لو مش موجود بنرجع لـ PAGE_ACCESS_TOKEN.
+let PAGE_TOKENS = {};
+try { if (process.env.PAGE_TOKENS) PAGE_TOKENS = JSON.parse(process.env.PAGE_TOKENS); }
+catch (e) { console.error("PAGE_TOKENS JSON parse error:", e.message); }
+function pageTokenFor(id) { return (id != null && PAGE_TOKENS[String(id)]) || PAGE_ACCESS_TOKEN; }
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const WHATSAPP_PHONE_ID = process.env.WHATSAPP_PHONE_ID;
 // سر التطبيق من ميتا (App Settings → Basic → App Secret) — للتحقق من توقيع الويبهوك.
@@ -1052,25 +1058,25 @@ function detectOrder(history) {
 
 // التوكن بيتبعت في الهيدر (مش في الـ URL) عشان مايتسجّلش في اللوجز/البروكسيات
 const META_GRAPH = "https://graph.facebook.com/v21.0";
-function metaHeaders() {
-  return { "content-type": "application/json", authorization: `Bearer ${PAGE_ACCESS_TOKEN}` };
+function metaHeaders(token) {
+  return { "content-type": "application/json", authorization: `Bearer ${token || PAGE_ACCESS_TOKEN}` };
 }
 
-// ===== إرسال رد للفيسبوك/انستجرام =====
-async function sendMessenger(recipientId, text) {
+// ===== إرسال رد للفيسبوك/انستجرام (pageId = الصفحة اللي وصلها الرسالة عشان نستخدم توكنها) =====
+async function sendMessenger(recipientId, text, pageId) {
   await fetchT(`${META_GRAPH}/me/messages`, {
     method: "POST",
-    headers: metaHeaders(),
+    headers: metaHeaders(pageTokenFor(pageId)),
     body: JSON.stringify({ recipient: { id: recipientId }, message: { text } }),
   });
 }
 
 // إرسال صورة عبر ماسنجر/انستجرام
-async function sendMessengerImage(recipientId, url) {
+async function sendMessengerImage(recipientId, url, pageId) {
   try {
     await fetchT(`${META_GRAPH}/me/messages`, {
       method: "POST",
-      headers: metaHeaders(),
+      headers: metaHeaders(pageTokenFor(pageId)),
       body: JSON.stringify({
         recipient: { id: recipientId },
         message: { attachment: { type: "image", payload: { url, is_reusable: true } } },
@@ -1082,11 +1088,11 @@ async function sendMessengerImage(recipientId, url) {
 // ===== تسليم المحادثة لموظف بشري في فيسبوك/انستجرام (Handover Protocol) =====
 // بينقل المحادثة لـ Page Inbox عشان تظهر لموظف في Meta Business Suite ويرد بنفسه.
 // شرط: لازم تفعّل Handover Protocol في إعدادات الـ App وتخلي "Page Inbox" هو الـ Secondary Receiver.
-async function passToHuman(senderId) {
+async function passToHuman(senderId, pageId) {
   try {
     await fetchT(`${META_GRAPH}/me/pass_thread_control`, {
       method: "POST",
-      headers: metaHeaders(),
+      headers: metaHeaders(pageTokenFor(pageId)),
       body: JSON.stringify({
         recipient: { id: senderId },
         target_app_id: PAGE_INBOX_APP_ID,
@@ -1170,6 +1176,7 @@ app.post("/webhook", async (req, res) => {
       const channel = body.object === "instagram" ? "instagram" : "messenger";
       const channelAr = body.object === "instagram" ? "انستجرام" : "فيسبوك";
       for (const entry of body.entry || []) {
+        const pageId = entry.id;  // معرّف الصفحة/الانستجرام اللي وصلها الرسالة → نستخدم توكنها الصح
         for (const event of entry.messaging || []) {
           if (!event.message || event.message.is_echo) continue;
           const senderId = event.sender.id;
@@ -1195,8 +1202,8 @@ app.post("/webhook", async (req, res) => {
           // مرفق مش نصي (صورة/ستيكر/ملف) أو صوت مش مفهوم → ماننفعش نسيب العميل من غير رد
           if (!userText) {
             if (hadAttachment) {
-              await sendMessenger(senderId, "استلمنا رسالتك 🙏 بحوّلك لأحد موظفينا يقدر يشوفها ويساعدك حالاً.");
-              await passToHuman(senderId);
+              await sendMessenger(senderId, "استلمنا رسالتك 🙏 بحوّلك لأحد موظفينا يقدر يشوفها ويساعدك حالاً.", pageId);
+              await passToHuman(senderId, pageId);
               await handedOff.add(senderId);
               await notifyHandoff(channelAr, senderId, "[مرفق غير نصي — صورة/صوت/ملف]");
             }
@@ -1205,8 +1212,8 @@ app.post("/webhook", async (req, res) => {
 
           // العميل طلب موظف صراحةً → تحويل فوري
           if (wantsHuman(userText)) {
-            await sendMessenger(senderId, HANDOFF_MESSAGE);
-            await passToHuman(senderId);
+            await sendMessenger(senderId, HANDOFF_MESSAGE, pageId);
+            await passToHuman(senderId, pageId);
             await handedOff.add(senderId);
             await notifyHandoff(channelAr, senderId, userText);
             console.log("Handoff (keyword) → human:", senderId);
@@ -1214,13 +1221,13 @@ app.post("/webhook", async (req, res) => {
           }
 
           const reply = await askAI(userText, channel, senderId);
-          if (reply.text) await sendMessenger(senderId, reply.text);
-          if (reply.images) for (const u of reply.images) await sendMessengerImage(senderId, u);
+          if (reply.text) await sendMessenger(senderId, reply.text, pageId);
+          if (reply.images) for (const u of reply.images) await sendMessengerImage(senderId, u, pageId);
           if (reply.order) {
             await notifyOwner(`🌴 أوردر جديد — ${channelAr}\n\n${reply.order}\n\nمعرّف العميل: ${senderId}`);
           }
           if (reply.handoff || needsEscalation(userText)) {
-            await passToHuman(senderId);
+            await passToHuman(senderId, pageId);
             await handedOff.add(senderId);
             await notifyHandoff(channelAr, senderId, userText);
             console.log("Handoff → human:", senderId);

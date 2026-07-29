@@ -565,7 +565,8 @@ function normAr(s) {
     .replace(/(^|\s)ال/g, "$1");          // شيل "ال" التعريف من بداية الكلمات
 }
 function distinctiveTokens(core) {
-  const toks = normAr(core).split(/\s+/).filter((w) => w.length >= 4 && !IMG_STOPWORDS.has(w));
+  // حد أدنى 3 حروف عشان نمسك كلمات مميّزة قصيرة زي "دلو" و"جعب"
+  const toks = normAr(core).split(/\s+/).filter((w) => w.length >= 3 && !IMG_STOPWORDS.has(w));
   return [...new Set(toks)]; // بدون تكرار (عشان الكلمة المكررة زي "فاخر" ماتضخّمش النقاط)
 }
 // مطابقة صور المنتجات من الكتالوج بناءً على الكلمات المميّزة في نص الرد.

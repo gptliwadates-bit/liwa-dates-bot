@@ -39,6 +39,10 @@ const APP_SECRET = process.env.APP_SECRET;
 // مفتاح أدمن منفصل لصفحات التشخيص و/release. لو مش متعرّف بنرجع لـ META_VERIFY_TOKEN.
 const ADMIN_KEY = process.env.ADMIN_KEY || META_VERIFY_TOKEN;
 const AI_MAX_TOKENS = Number(process.env.AI_MAX_TOKENS) || 900;
+// مفتاح إيقاف رئيسي: لو مش "true" البوت يستقبل رسائل ميتا بس ما يردّش (صامت تمامًا).
+// عشان تربط ميتا من غير ما البوت يشتغل على العملاء. صفحة التجربة /chat تفضل شغالة عادي.
+// لتشغيله فعليًا: حط BOT_ENABLED=true في متغيرات Vercel.
+const BOT_ENABLED = process.env.BOT_ENABLED === "true";
 // مهلة لأي طلب شبكة عشان الفنكشن ماتعلّقش على Serverless
 async function fetchT(url, opts = {}, ms = 20000) {
   const c = new AbortController();
@@ -1152,6 +1156,11 @@ app.post("/webhook", async (req, res) => {
   if (!verifyMetaSignature(req)) {
     console.warn("Rejected webhook: bad signature");
     return res.sendStatus(403);
+  }
+  // مفتاح الإيقاف: لو البوت متوقّف، نستلم الرسالة ونأكّد لميتا (200) بس ما نردّش على العميل.
+  if (!BOT_ENABLED) {
+    console.log("BOT_ENABLED=false — webhook received but bot is paused (no reply sent).");
+    return res.sendStatus(200);
   }
   const body = req.body;
 

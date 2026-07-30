@@ -1424,6 +1424,55 @@ app.get("/release", async (req, res) => {
   res.send("المحادثة مش متحوّلة أصلاً أو الـ id غلط.");
 });
 
+// ===== صفحة سياسة الخصوصية (عامة) — مطلوبة لنشر تطبيق Meta =====
+// افتح: https://liwa-dates-bot.vercel.app/privacy
+const PRIVACY_PAGE = `<!doctype html><html lang="ar" dir="rtl"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>سياسة الخصوصية — تمور ليوا | Liwa Dates Privacy Policy</title>
+<style>body{font-family:-apple-system,Segoe UI,Tahoma,Arial,sans-serif;max-width:760px;margin:24px auto;padding:0 18px;line-height:1.8;color:#222}h1{font-size:1.5rem}h2{font-size:1.15rem;margin-top:1.6em}small{color:#666}hr{border:none;border-top:1px solid #eee;margin:24px 0}.en{direction:ltr;text-align:left}</style>
+</head><body>
+<h1>سياسة الخصوصية — تمور ليوا (Liwa Dates)</h1>
+<small>آخر تحديث: يوليو 2026</small>
+
+<p>تشغّل تمور ليوا مساعدًا آليًا للرد على رسائل العملاء عبر Facebook Messenger لخدمة المزارعين (صناديق تجفيف التمور، صناديق الرطب الفارغة، وخدمات التعبئة). توضّح هذه السياسة البيانات التي نعالجها وكيفية استخدامها.</p>
+
+<h2>البيانات التي نعالجها</h2>
+<p>عند مراسلتك لصفحتنا على ماسنجر نعالج: مُعرّف المستخدم على المنصّة (Page-Scoped ID)، والاسم العام والصورة الظاهرة على الحساب، ونصّ الرسائل التي ترسلها، وأي تفاصيل طلب تشاركها طوعًا (مثل الاسم ورقم الهاتف وعدد الصناديق والإمارة والموقع) لتجهيز طلبك.</p>
+
+<h2>كيف نستخدم البيانات</h2>
+<p>نستخدم هذه البيانات فقط للردّ على استفساراتك، وتقديم الأسعار والمعلومات، وتسجيل طلبات التعبئة وتنسيق التوصيل والتسليم، وتحويلك لموظف بشري عند الحاجة. لا نبيع بياناتك ولا نستخدمها في إعلانات.</p>
+
+<h2>المشاركة مع أطراف ثالثة</h2>
+<p>لتشغيل المساعد الآلي قد تُعالَج نصوص الرسائل عبر مزوّد خدمة الذكاء الاصطناعي (OpenAI) لغرض توليد الردّ فقط، وعبر Meta Platforms لتوصيل الرسائل. لا نشارك بياناتك مع أي جهة أخرى إلا إذا استلزم القانون ذلك.</p>
+
+<h2>الاحتفاظ بالبيانات وحذفها</h2>
+<p>نحتفظ بسجلّ المحادثة والطلب للمدة اللازمة لخدمتك فقط. لطلب حذف بياناتك، راسلنا على البريد أدناه أو أرسل كلمة «حذف بياناتي» في المحادثة، وسنحذفها خلال مدة معقولة.</p>
+
+<h2>التواصل</h2>
+<p>لأي استفسار بخصوص الخصوصية: <a href="mailto:info@liwadates.com">info@liwadates.com</a> — الموقع: <a href="https://liwadates.com">liwadates.com</a></p>
+
+<hr>
+<div class="en">
+<h1>Privacy Policy — Liwa Dates</h1>
+<small>Last updated: July 2026</small>
+<p>Liwa Dates operates an automated assistant that replies to customer messages on Facebook Messenger to serve farmers (date-drying boxes, empty rutab cartons, and packing services). This policy explains what data we process and how we use it.</p>
+<h2>Data we process</h2>
+<p>When you message our page we process: your platform user identifier (Page-Scoped ID), your public name and profile picture, the text of the messages you send, and any order details you voluntarily share (such as name, phone number, number of boxes, emirate and location) to fulfil your request.</p>
+<h2>How we use data</h2>
+<p>We use this data only to answer your questions, provide pricing and information, log packing orders, coordinate delivery/pickup, and hand you over to a human agent when needed. We do not sell your data or use it for advertising.</p>
+<h2>Third parties</h2>
+<p>To run the assistant, message text may be processed by our AI provider (OpenAI) solely to generate a reply, and by Meta Platforms to deliver messages. We do not share your data with anyone else unless required by law.</p>
+<h2>Data retention & deletion</h2>
+<p>We keep conversation and order records only as long as needed to serve you. To request deletion, email us below or send "delete my data" in the chat, and we will delete it within a reasonable period.</p>
+<h2>Contact</h2>
+<p>For any privacy question: <a href="mailto:info@liwadates.com">info@liwadates.com</a> — Website: <a href="https://liwadates.com">liwadates.com</a></p>
+</div>
+</body></html>`;
+
+app.get("/privacy", (req, res) => {
+  res.set("content-type", "text/html; charset=utf-8").send(PRIVACY_PAGE);
+});
+
 // ===== نقطة تجربة: جرّب رد الوكيل من المتصفح =====
 // مثال: https://<your-server>/test?key=liwa2026&msg=بكم المجدول؟
 // محمية بمفتاح بسيط (نفس META_VERIFY_TOKEN) عشان محدش يستهلك رصيدك.

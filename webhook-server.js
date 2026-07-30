@@ -54,6 +54,40 @@ const BOT_ENABLED = process.env.BOT_ENABLED === "true";
 const ALLOWED_IDS = new Set((process.env.ALLOWED_IDS || "").split(",").map((s) => s.trim()).filter(Boolean));
 // تشغيل/إيقاف واتساب مستقل (افتراضي شغّال). لإيقافه: WHATSAPP_ENABLED=false
 const WHATSAPP_ENABLED = process.env.WHATSAPP_ENABLED !== "false";
+// قنوات المزارعين: معرّفات الصفحات/الحسابات اللي البوت يركّز فيها على أدوات موسم الحصاد.
+const FARMER_IDS = new Set((process.env.FARMER_IDS || "").split(",").map((s) => s.trim()).filter(Boolean));
+// رابط تسجيل الأوردرات في شيت (Google Apps Script Web App) — كل أوردر يتبعت له صف.
+const ORDERS_SHEET_URL = process.env.ORDERS_SHEET_URL || "";
+// تعليمات وضع المزارعين — المصدر الرسمي لخدمة التعبئة (Packing 2024). بتتضاف للعقل على قناة المزارعين.
+const FARMER_MODE_TEXT = `
+
+## ⚠️⚠️ وضع قناة المزارعين (خدمات التعبئة) — ده المصدر الرسمي، اعتمد عليه على القناة دي
+إنت على قناة **مصنع تمور ليوا لخدمات التعبئة والتغليف للمزارعين** (نخدم مزارعين النخيل من ١٩ سنة). عرّف نفسك باسم **«عبيد»** مساعد المصنع، ورحّب بترحيب دافئ للمزارع مرة واحدة. **ركّز بس على منتجات وخدمات التعبئة التالية، وماتعرضش تمور التجزئة (مجدول/خلاص/عجوة/كرانشلي) هنا إطلاقًا.**
+
+**⚠️ الأسعار والعروض دي هي المعتمدة على قناة المزارعين (تجاهل أي أسعار أدوات مختلفة في الأعلى):**
+
+1) **صناديق تجفيف التمر**
+- المميزات: تساعد في عمليات الغسيل والتجفيف، توفّر مساحة تجفيف ممتازة، وتحمي التمور من الغبار والأتربة.
+- السعر: **25 درهم للصندوق الواحد**. التوصيل: **30 درهم للشحنة الواحدة**.
+- عرض: **اطلب أكثر من 50 صندوق → سعر مميّز + توصيل مجاني داخل الدولة**.
+
+2) **كرتون الرطب** (مع بداية موسم الرطب — كرتون مصمّم خصيصًا للرطب)
+- المميزات: مصنوع من مواد كرتونية صديقة للبيئة، تصميم عملي يحافظ على جودة الرطب أثناء النقل، شكل راقٍ يعكس هوية منتجات النخلة، مميّز للتوزيع المباشر أو البيع في الأسواق.
+- السعر: **2 درهم للكرتون الواحد**. التوصيل: **30 درهم للشحنة الواحدة**.
+- عرض: **اطلب 250 كرتون → توصيل مجاني داخل الدولة**.
+
+3) **الصناديق المستعملة**
+- مناسبة لتخزين ونقل التمور والخضار — للمزارع والمصانع والمستودعات. الأحجام: **متوسط وكبير**.
+- السعر: **5 درهم للصندوق الواحد**.
+- **لا يوجد توصيل لها — الاستلام من داخل مصنع تمور ليوا (المنطقة الغربية، مزيرعة، ليوا).**
+
+**خدمات إضافية:** خدمات **استلام وتسليم** التمور من وإلى مزرعتك، وخدمات تعبئة التمور للمزارعين.
+
+**عند الطلب:** اطلب من العميل البيانات في **رسالة واحدة** بالضبط كده:
+«الاسم: / رقم الهاتف: / عدد صناديق التمر: / الإمارة والموقع:»
+وبعدها طمّنه إن **أحد موظفينا سيتواصل معه خلال دقائق**، وحوّل المحادثة لموظف (علامة التحويل).
+
+اللهجة: مؤدبة ودافئة بروح خدمة المزارعين. ماتخترعش أي منتج أو سعر مش مذكور فوق.`;
 // مهلة لأي طلب شبكة عشان الفنكشن ماتعلّقش على Serverless
 async function fetchT(url, opts = {}, ms = 20000) {
   const c = new AbortController();
@@ -698,8 +732,9 @@ const DEGRADED_NOTE =
   `ولأي سؤال عن سعر أو توفّر منتج قول بلطف إنك بتتأكد من الأسعار المحدّثة ووجّه العميل للموقع liwadates.com أو الواتساب +971545317473.`;
 
 // يبني الـ system prompt مع الكتالوج الحيّ لو متوفر
-function buildSystemPrompt() {
-  if (!liveCatalog) return SYSTEM_PROMPT + DEGRADED_NOTE;
+function buildSystemPrompt(mode) {
+  const farmer = mode === "farmer" ? FARMER_MODE_TEXT : "";
+  if (!liveCatalog) return SYSTEM_PROMPT + DEGRADED_NOTE + farmer;
   let out =
     SYSTEM_PROMPT +
     `\n\n## الكتالوج الحيّ (محدّث تلقائيًا — لكل منتج سعر كل حجم بالضبط + رابطه)\n` +
@@ -721,11 +756,12 @@ function buildSystemPrompt() {
   if (siteInfo) {
     out += `\n\n## معلومات إضافية من صفحات الموقع (محدّثة تلقائيًا — استخدمها للإجابة عن الأسئلة العامة)\n${siteInfo}`;
   }
+  out += farmer; // وضع المزارعين يتضاف في الآخر عشان يغلب على أي تعليمات عامة
   return out;
 }
 
 // ===== طبقة الاتصال بـ OpenAI (تقبل محادثة كاملة) =====
-async function openaiReply(history) {
+async function openaiReply(history, mode) {
   // history = [{role:'user'|'assistant', content:'...'}, ...]
   await ensureFresh(); // يضمن إن الكتالوج محمّل (خصوصًا على Serverless)
   const res = await fetchT("https://api.openai.com/v1/chat/completions", {
@@ -737,7 +773,7 @@ async function openaiReply(history) {
     body: JSON.stringify({
       model: AI_MODEL,
       max_tokens: AI_MAX_TOKENS,
-      messages: [{ role: "system", content: buildSystemPrompt() }, ...history],
+      messages: [{ role: "system", content: buildSystemPrompt(mode) }, ...history],
     }),
   }, 30000);
   const data = await res.json();
@@ -1005,12 +1041,12 @@ async function downloadUrl(url) {
 
 // ===== دالة تسأل OpenAI مع ذاكرة المحادثة (تستخدمها قنوات ميتا) =====
 // convId = معرّف العميل (عشان نجيب/نحفظ تاريخه). لو مش موجود بترجع لرسالة واحدة.
-async function askAI(userMessage, source, convId) {
+async function askAI(userMessage, source, convId, mode) {
   try {
     let history;
     if (convId) history = await historyStore.push(convId, "user", userMessage);
     else history = [{ role: "user", content: userMessage }];
-    const raw = await openaiReply(history);
+    const raw = await openaiReply(history, mode);
     if (raw === null) return { text: "معلش حصل خطأ بسيط، ممكن تبعت تاني؟", handoff: false, order: null };
     const parsed = parseReply(raw, source);
     // نحفظ رد البوت في الذاكرة عشان اللفّة الجاية يبقى فيه سياق
@@ -1020,6 +1056,24 @@ async function askAI(userMessage, source, convId) {
     console.error("askAI failed:", e);
     return { text: "معلش حصل خطأ بسيط، ممكن تبعت تاني؟", handoff: false, order: null };
   }
+}
+
+// ===== تسجيل الأوردر في شيت جوجل (Apps Script Web App) — كل أوردر = صف =====
+async function logOrder({ order, channel, customerId, mode }) {
+  if (!ORDERS_SHEET_URL) { console.log("ORDERS_SHEET_URL not set — order not logged to sheet."); return; }
+  try {
+    await fetchT(ORDERS_SHEET_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        time: new Date().toISOString(),
+        channel: channel || "",
+        mode: mode || "",
+        customer: String(customerId || ""),
+        order: String(order || ""),
+      }),
+    }, 8000);
+  } catch (e) { console.error("logOrder failed:", e.message); }
 }
 
 // ===== تنبيه صاحب المتجر على تيليجرام =====
@@ -1218,6 +1272,7 @@ app.post("/webhook", async (req, res) => {
       const channelAr = body.object === "instagram" ? "انستجرام" : "فيسبوك";
       for (const entry of body.entry || []) {
         const pageId = entry.id;  // معرّف الصفحة/الانستجرام اللي وصلها الرسالة → نستخدم توكنها الصح
+        const chanMode = FARMER_IDS.has(String(pageId)) ? "farmer" : null; // وضع المزارعين حسب القناة
         // نسجّل معرّف كل قناة توصل (يفيد في معرفة معرّف انستقرام لاحقًا لو حبيت تقيّده بالظبط)
         console.log("Incoming:", channel, "id=", pageId);
         // قائمة السماح لفيسبوك ماسنجر: لو متعرّفة والصفحة مش فيها → تجاهل (نرد على المسموح بس).
@@ -1269,11 +1324,12 @@ app.post("/webhook", async (req, res) => {
             continue;
           }
 
-          const reply = await askAI(userText, channel, senderId);
+          const reply = await askAI(userText, channel, senderId, chanMode);
           if (reply.text) await sendMessenger(senderId, reply.text, pageId);
           if (reply.images) for (const u of reply.images) await sendMessengerImage(senderId, u, pageId);
           if (reply.order) {
             await notifyOwner(`🌴 أوردر جديد — ${channelAr}\n\n${reply.order}\n\nمعرّف العميل: ${senderId}`);
+            await logOrder({ order: reply.order, channel: channelAr, customerId: senderId, mode: chanMode });
           }
           if (reply.handoff || needsEscalation(userText)) {
             await passToHuman(senderId, pageId);
@@ -1334,6 +1390,7 @@ app.post("/webhook", async (req, res) => {
             if (reply.images) for (const u of reply.images) await sendWhatsAppImage(from, u);
             if (reply.order) {
               await notifyOwner(`🌴 أوردر جديد — واتساب\n\n${reply.order}\n\nرقم العميل: ${from}`);
+              await logOrder({ order: reply.order, channel: "واتساب", customerId: from });
             }
             if (reply.handoff || needsEscalation(userText)) {
               await handedOff.add(from);
@@ -1408,7 +1465,8 @@ app.post("/api/chat", async (req, res) => {
   if (req.query.key !== ADMIN_KEY) return res.status(403).json({ error: "forbidden" });
   try {
     const history = Array.isArray(req.body.messages) ? req.body.messages.slice(-20) : [];
-    const raw = await openaiReply(history);
+    const mode = req.query.mode === "farmer" ? "farmer" : null; // للتجربة: /api/chat?mode=farmer
+    const raw = await openaiReply(history, mode);
     if (raw === null) return res.json({ reply: "معلش حصل خطأ، جرّب تاني.", handoff: false, order: null });
     const parsed = parseReply(raw, "webchat");
     // شبكة أمان: لو آخر رسالة عميل فيها إشارة شكوى/تصعيد، فعّل التحويل

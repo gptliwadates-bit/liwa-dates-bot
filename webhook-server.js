@@ -762,6 +762,19 @@ function distinctiveTokens(core) {
   const toks = normAr(core).split(/\s+/).filter((w) => w.length >= 3 && !IMG_STOPWORDS.has(w));
   return [...new Set(toks)]; // بدون تكرار (عشان الكلمة المكررة زي "فاخر" ماتضخّمش النقاط)
 }
+// مجموعة كلمات الرد (كلمات كاملة) — عشان المطابقة تبقى بكلمة كاملة مش جزء من كلمة.
+// (كان "بار" بيطابق جوّه "شخبارك" فيبعت منتج عشوائي على التحية — ده بيمنعه.)
+function replyWordSet(text) {
+  const t = normAr(text);
+  const words = t.split(/[^ء-ي0-9]+/).filter(Boolean);
+  const set = new Set();
+  for (const w of words) {
+    set.add(w);
+    const s = w.replace(/^(وال|فال|بال|كال|لل|ال|و|ف|ب|ك|ل)/, ""); // شيل السوابق العربية الشائعة
+    if (s && s !== w) set.add(s);
+  }
+  return set;
+}
 // مطابقة صور المنتجات من الكتالوج بناءً على الكلمات المميّزة في نص الرد.
 // بيرجّع صور **كل** المنتجات اللي اتذكرت بوضوح (يدعم أكتر من نوع)، وبيتجنّب التخمين لما الطلب عام.
 // منتج بيتحدد لو: (أ) طابق كلمة فريدة ليه (df==1، زي "مكاديميا")، أو (ب) كان الفائز الوحيد بأعلى نقاط.
@@ -770,13 +783,13 @@ function distinctiveTokens(core) {
 // فمانطلعش صورة نكهة تانية من نفس المنتج (ده سبب "صور المنتجات الغلط").
 function deterministicImages(text, lenient) {
   if (!text || !productImages || !productImages.length) return [];
-  const t = normAr(text);
+  const words = replyWordSet(text); // مطابقة بكلمة كاملة (مش substring)
   const LINE_GENERIC = new Set(["فاخر", "فاخره"]); // كلمات عامة مش بتحدّد خط منتج
   const prods = productImages.map((p) => ({ p, toks: distinctiveTokens(p.core), line: p.line || p.core }));
   const df = {};
   for (const { toks } of prods) for (const w of new Set(toks)) df[w] = (df[w] || 0) + 1;
   const scored = prods
-    .map((x) => ({ p: x.p, line: x.line, matched: x.toks.filter((w) => t.includes(w)) }))
+    .map((x) => ({ p: x.p, line: x.line, matched: x.toks.filter((w) => words.has(w)) }))
     .filter((x) => x.matched.length);
   if (!scored.length) return [];
   const cap = lenient ? 5 : 3;

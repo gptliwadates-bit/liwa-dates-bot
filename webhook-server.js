@@ -1492,9 +1492,11 @@ app.get("/test", async (req, res) => {
     return res.status(403).send("forbidden — add ?key=YOUR_VERIFY_TOKEN");
   }
   const msg = req.query.msg;
-  if (!msg) return res.send("ابعت رسالة: /test?key=...&msg=رسالتك");
-  const reply = await askAI(String(msg), "test");
-  res.json({ customer_message: msg, bot_reply: reply.text, handoff: reply.handoff, order: reply.order });
+  if (!msg) return res.send("ابعت رسالة: /test?key=...&msg=رسالتك (وللمزارعين زوّد &mode=farmer&id=معرف)");
+  const mode = req.query.mode === "farmer" ? "farmer" : null;
+  const convId = "test_" + (req.query.id || "x");
+  const reply = await askAI(String(msg), "test", convId, mode);
+  res.json({ customer_message: msg, mode: mode || "retail", bot_reply: reply.text, handoff: reply.handoff, order: reply.order });
 });
 
 // ===== واجهة شات للتجربة =====

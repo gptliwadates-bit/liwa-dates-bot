@@ -1069,6 +1069,12 @@ async function askAI(userMessage, source, convId, mode) {
     const raw = await openaiReply(history, mode);
     if (raw === null) return { text: "معلش حصل خطأ بسيط، ممكن تبعت تاني؟", handoff: false, order: null };
     const parsed = parseReply(raw, source);
+    // شبكة أمان للتحويل (وضع المزارعين): لو البوت اعترف إنه مش عارف/المعلومة مش عنده،
+    // نفعّل التحويل حتمًا عشان المحادثة تتسلّم لموظف بشري في الـ Inbox حتى لو الموديل نسي [[HANDOFF]].
+    if (mode === "farmer" && !parsed.handoff && parsed.text) {
+      const unsure = /غير متوفر(ة)?\s*(عندي|لدي|حالي|حالياً)|مش متوفر(ة)?\s*عند(ي|نا)|مش موجود(ة)?\s*(في معلومات|عندي|لدي)|مش عندي\s*(معلوم|تفاصيل|فكرة)|ما\s*عندي\s*(معلوم|تفاصيل)|معلومات.{0,25}(غير متوفرة|مش متوفرة|مش موجودة)|(بحوّ?لك|هحوّ?لك|أحوّ?لك)\s*(ل|لأحد|لموظف)/;
+      if (unsure.test(parsed.text)) parsed.handoff = true;
+    }
     // نحفظ رد البوت في الذاكرة عشان اللفّة الجاية يبقى فيه سياق
     if (convId && parsed.text) await historyStore.push(convId, "assistant", parsed.text);
     return parsed;

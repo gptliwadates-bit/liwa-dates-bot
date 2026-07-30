@@ -49,6 +49,11 @@ const AI_MAX_TOKENS = Number(process.env.AI_MAX_TOKENS) || 900;
 // عشان تربط ميتا من غير ما البوت يشتغل على العملاء. صفحة التجربة /chat تفضل شغالة عادي.
 // لتشغيله فعليًا: حط BOT_ENABLED=true في متغيرات Vercel.
 const BOT_ENABLED = process.env.BOT_ENABLED === "true";
+// قائمة سماح: معرّفات الصفحات/حسابات الانستقرام اللي البوت يرد عليها بس (فاصلة بينها).
+// لو فاضية → يرد على الكل. مثال للمزارعين فقط: ALLOWED_IDS=106046561404042,<ig_id>
+const ALLOWED_IDS = new Set((process.env.ALLOWED_IDS || "").split(",").map((s) => s.trim()).filter(Boolean));
+// تشغيل/إيقاف واتساب مستقل (افتراضي شغّال). لإيقافه: WHATSAPP_ENABLED=false
+const WHATSAPP_ENABLED = process.env.WHATSAPP_ENABLED !== "false";
 // مهلة لأي طلب شبكة عشان الفنكشن ماتعلّقش على Serverless
 async function fetchT(url, opts = {}, ms = 20000) {
   const c = new AbortController();
@@ -1213,6 +1218,8 @@ app.post("/webhook", async (req, res) => {
       const channelAr = body.object === "instagram" ? "انستجرام" : "فيسبوك";
       for (const entry of body.entry || []) {
         const pageId = entry.id;  // معرّف الصفحة/الانستجرام اللي وصلها الرسالة → نستخدم توكنها الصح
+        // قائمة السماح: لو متعرّفة والصفحة/الحساب مش فيها → تجاهل تمامًا (البوت يرد على المسموح بس)
+        if (ALLOWED_IDS.size && !ALLOWED_IDS.has(String(pageId))) continue;
         for (const event of entry.messaging || []) {
           if (!event.message || event.message.is_echo) continue;
           const senderId = event.sender.id;
@@ -1275,7 +1282,7 @@ app.post("/webhook", async (req, res) => {
     // --- واتساب ---
     // ملاحظة: واتساب مافيهوش Handover Protocol زي ميسنجر. التحويل هنا =
     // البوت يسكت + يبلّغ العميل، والموظف بيرد يدوياً من نفس Business Suite Inbox.
-    if (body.object === "whatsapp_business_account") {
+    if (body.object === "whatsapp_business_account" && WHATSAPP_ENABLED) {
       for (const entry of body.entry || []) {
         for (const change of entry.changes || []) {
           const messages = change.value?.messages || [];

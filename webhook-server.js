@@ -1309,7 +1309,8 @@ app.post("/webhook", async (req, res) => {
       const channelAr = body.object === "instagram" ? "انستجرام" : "فيسبوك";
       for (const entry of body.entry || []) {
         const pageId = entry.id;  // معرّف الصفحة/الانستجرام اللي وصلها الرسالة → نستخدم توكنها الصح
-        const chanMode = FARMER_IDS.has(String(pageId)) ? "farmer" : null; // وضع المزارعين حسب القناة
+        // وضع المزارعين: انستقرام دايمًا (حساب المزارعين)، والماسنجر حسب معرّف الصفحة في FARMER_IDS
+        const chanMode = (channel === "instagram" || FARMER_IDS.has(String(pageId))) ? "farmer" : null;
         // نسجّل معرّف كل قناة توصل (يفيد في معرفة معرّف انستقرام لاحقًا لو حبيت تقيّده بالظبط)
         console.log("Incoming:", channel, "id=", pageId);
         // قائمة السماح لفيسبوك ماسنجر: لو متعرّفة والصفحة مش فيها → تجاهل (نرد على المسموح بس).
@@ -1422,12 +1423,12 @@ app.post("/webhook", async (req, res) => {
               continue;
             }
 
-            const reply = await askAI(userText, "whatsapp", from);
+            const reply = await askAI(userText, "whatsapp", from, "farmer");
             if (reply.text) await sendWhatsApp(from, reply.text);
             if (reply.images) for (const u of reply.images) await sendWhatsAppImage(from, u);
             if (reply.order) {
               await notifyOwner(`🌴 أوردر جديد — واتساب\n\n${reply.order}\n\nرقم العميل: ${from}`);
-              await logOrder({ order: reply.order, channel: "واتساب", customerId: from });
+              await logOrder({ order: reply.order, channel: "واتساب", customerId: from, mode: "farmer" });
             }
             if (reply.handoff || needsEscalation(userText)) {
               await handedOff.add(from);

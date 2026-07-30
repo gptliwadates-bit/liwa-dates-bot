@@ -1218,8 +1218,14 @@ app.post("/webhook", async (req, res) => {
       const channelAr = body.object === "instagram" ? "انستجرام" : "فيسبوك";
       for (const entry of body.entry || []) {
         const pageId = entry.id;  // معرّف الصفحة/الانستجرام اللي وصلها الرسالة → نستخدم توكنها الصح
-        // قائمة السماح: لو متعرّفة والصفحة/الحساب مش فيها → تجاهل تمامًا (البوت يرد على المسموح بس)
-        if (ALLOWED_IDS.size && !ALLOWED_IDS.has(String(pageId))) continue;
+        // نسجّل معرّف كل قناة توصل (يفيد في معرفة معرّف انستقرام لاحقًا لو حبيت تقيّده بالظبط)
+        console.log("Incoming:", channel, "id=", pageId);
+        // قائمة السماح لفيسبوك ماسنجر: لو متعرّفة والصفحة مش فيها → تجاهل (نرد على المسموح بس).
+        // (الانستقرام مقيّد عمليًا بتوكن الصفحة المسموحة، فمش بنحجبه بالمعرّف هنا.)
+        if (channel === "messenger" && ALLOWED_IDS.size && !ALLOWED_IDS.has(String(pageId))) {
+          console.log("Skip messenger (not allowed):", pageId);
+          continue;
+        }
         for (const event of entry.messaging || []) {
           if (!event.message || event.message.is_echo) continue;
           const senderId = event.sender.id;

@@ -1,8 +1,7 @@
 // =============================================================================
-// Liwa Dates Bot — PRODUCTION BUNDLE (generated). v4.
-// Adds Human Takeover system (bot goes silent while a human agent handles a chat).
-// Requires Upstash Redis + message_echoes subscription to auto-detect (see README).
-// Also: degraded-safe boot + ALLOW_UNSIGNED_WEBHOOKS escape-hatch (temporary).
+// Liwa Dates Bot — PRODUCTION BUNDLE (generated). v5.
+// Reads Upstash creds from UPSTASH_REDIS_REST_* OR Vercel KV_REST_API_* names.
+// Includes: hardening + Human Takeover + degraded-safe boot + signature escape-hatch.
 // Source of truth = liwa-dates-bot-HARDENED zip. Do NOT hand-edit.
 // =============================================================================
 var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -98,8 +97,9 @@ var require_env = __commonJS({
         META_APP_ID: env.META_APP_ID || "",
         AI_MODEL: env.AI_MODEL || "gpt-4o-mini",
         AI_MAX_TOKENS: num(env.AI_MAX_TOKENS, 900),
-        UPSTASH_REDIS_REST_URL: env.UPSTASH_REDIS_REST_URL || "",
-        UPSTASH_REDIS_REST_TOKEN: env.UPSTASH_REDIS_REST_TOKEN || "",
+        // Accept Vercel Marketplace (Upstash) injected names KV_REST_API_* as fallbacks.
+        UPSTASH_REDIS_REST_URL: env.UPSTASH_REDIS_REST_URL || env.KV_REST_API_URL || "",
+        UPSTASH_REDIS_REST_TOKEN: env.UPSTASH_REDIS_REST_TOKEN || env.KV_REST_API_TOKEN || "",
         TELEGRAM_BOT_TOKEN: env.TELEGRAM_BOT_TOKEN || "",
         TELEGRAM_CHAT_ID: env.TELEGRAM_CHAT_ID || "",
         ORDERS_SHEET_URL: env.ORDERS_SHEET_URL || "",
@@ -1636,8 +1636,8 @@ var ESCALATION_SIGNALS = [
 ];
 var PAGE_INBOX_APP_ID = "263902037430900";
 var _memHandoff = /* @__PURE__ */ new Set();
-var UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
-var UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+var UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+var UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
 var HAS_UPSTASH = !!(UPSTASH_URL && UPSTASH_TOKEN);
 async function _upstash(cmd) {
   const res = await fetchT(UPSTASH_URL, {

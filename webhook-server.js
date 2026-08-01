@@ -1,8 +1,10 @@
 // =============================================================================
-// Liwa Dates Bot — PRODUCTION BUNDLE (generated). v2: degraded-safe boot.
-// Missing ADMIN_KEY no longer crashes the app (admin routes return 503 instead).
-// Source of truth = modular project in liwa-dates-bot-HARDENED.zip.
-// Re-bundle: npx esbuild webhook-server.js --bundle --platform=node --format=cjs --external:express --outfile=deploy/webhook-server.js
+// Liwa Dates Bot — PRODUCTION BUNDLE (generated). v3.
+// - degraded-safe boot (missing ADMIN_KEY -> admin 503, no crash)
+// - ALLOW_UNSIGNED_WEBHOOKS=true escape-hatch: process webhooks even if signature
+//   fails/absent (logs a warning). TEMPORARY until correct APP_SECRET is set, then
+//   set ALLOW_UNSIGNED_WEBHOOKS=false to re-enforce signature verification.
+// Source of truth = liwa-dates-bot-HARDENED-v2.zip. Do NOT hand-edit.
 // =============================================================================
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __commonJS = (cb, mod) => function __require() {
@@ -284,14 +286,11 @@ var require_signature = __commonJS({
       }
     }
     function checkWebhook2({ rawBody, signatureHeader, appSecret, isProd, allowUnsigned }) {
-      if (appSecret) {
-        if (verifyMetaSignature(rawBody, signatureHeader, appSecret)) {
-          return { ok: true, status: 200, reason: "valid_signature" };
-        }
-        return { ok: false, status: 401, reason: "invalid_signature" };
-      }
+      const verified = appSecret ? verifyMetaSignature(rawBody, signatureHeader, appSecret) : false;
+      if (verified) return { ok: true, status: 200, reason: "valid_signature" };
+      if (allowUnsigned) return { ok: true, status: 200, reason: "unsigned_allowed" };
+      if (appSecret) return { ok: false, status: 401, reason: "invalid_signature" };
       if (isProd) return { ok: false, status: 401, reason: "app_secret_missing_in_prod" };
-      if (allowUnsigned) return { ok: true, status: 200, reason: "unsigned_allowed_dev" };
       return { ok: false, status: 401, reason: "unsigned_blocked" };
     }
     module2.exports = { verifyMetaSignature, checkWebhook: checkWebhook2 };

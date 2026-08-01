@@ -1,10 +1,9 @@
 // =============================================================================
-// Liwa Dates Bot — PRODUCTION BUNDLE (generated). v3.
-// - degraded-safe boot (missing ADMIN_KEY -> admin 503, no crash)
-// - ALLOW_UNSIGNED_WEBHOOKS=true escape-hatch: process webhooks even if signature
-//   fails/absent (logs a warning). TEMPORARY until correct APP_SECRET is set, then
-//   set ALLOW_UNSIGNED_WEBHOOKS=false to re-enforce signature verification.
-// Source of truth = liwa-dates-bot-HARDENED-v2.zip. Do NOT hand-edit.
+// Liwa Dates Bot — PRODUCTION BUNDLE (generated). v4.
+// Adds Human Takeover system (bot goes silent while a human agent handles a chat).
+// Requires Upstash Redis + message_echoes subscription to auto-detect (see README).
+// Also: degraded-safe boot + ALLOW_UNSIGNED_WEBHOOKS escape-hatch (temporary).
+// Source of truth = liwa-dates-bot-HARDENED zip. Do NOT hand-edit.
 // =============================================================================
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __commonJS = (cb, mod) => function __require() {
@@ -88,6 +87,15 @@ var require_env = __commonJS({
         BOT_ENABLED: BOT_ENABLED2,
         WHATSAPP_ENABLED: parseBool(env.WHATSAPP_ENABLED, true),
         ALLOW_UNSIGNED_WEBHOOKS: parseBool(env.ALLOW_UNSIGNED_WEBHOOKS, false),
+        // Human Takeover — bot goes silent when a human agent handles a conversation.
+        HUMAN_TAKEOVER_ENABLED: parseBool(env.HUMAN_TAKEOVER_ENABLED, true),
+        HUMAN_TAKEOVER_TTL_MINUTES: num(env.HUMAN_TAKEOVER_TTL_MINUTES, 30),
+        // Fail-closed ONLY on a Redis OPERATIONAL error when Redis IS configured.
+        // (When Redis is absent, the in-memory store is used best-effort — never fail-closed.)
+        HUMAN_TAKEOVER_FAIL_CLOSED: parseBool(env.HUMAN_TAKEOVER_FAIL_CLOSED, true),
+        // Optional: our Meta App ID — lets us recognize the bot's own echoes by app_id
+        // as a fallback to the recorded message-id set. Not a secret (App ID is public).
+        META_APP_ID: env.META_APP_ID || "",
         AI_MODEL: env.AI_MODEL || "gpt-4o-mini",
         AI_MAX_TOKENS: num(env.AI_MAX_TOKENS, 900),
         UPSTASH_REDIS_REST_URL: env.UPSTASH_REDIS_REST_URL || "",
@@ -1015,6 +1023,160 @@ var require_keys = __commonJS({
   }
 });
 
+// lib/takeover.js
+var require_takeover = __commonJS({
+  "lib/takeover.js"(exports2, module2) {
+    "use strict";
+    var STATES = Object.freeze({
+      BOT_ACTIVE: "BOT_ACTIVE",
+      HUMAN_ACTIVE: "HUMAN_ACTIVE",
+      RELEASING: "RELEASING",
+      BOT_PROCESSING: "BOT_PROCESSING"
+    });
+    var DEFAULT_TTL_MINUTES = 30;
+    var BOT_ACTIVE_KEEP_SEC = 24 * 60 * 60;
+    var BOT_SENT_TTL_SEC = 60 * 60;
+    function _seg(v) {
+      return v == null || v === "" ? "-" : String(v);
+    }
+    function stateKey(channel, accountId, customerId) {
+      return `conversation_state:${_seg(channel)}:${_seg(accountId)}:${_seg(customerId)}`;
+    }
+    function botSentKey(id) {
+      return `bot_sent_msg:${_seg(id)}`;
+    }
+    function parseRecord(raw) {
+      if (!raw) return null;
+      if (typeof raw === "object") return raw;
+      try {
+        return JSON.parse(raw);
+      } catch {
+        return null;
+      }
+    }
+    function isExpired(record, now) {
+      if (!record) return true;
+      if (!record.expires_at) return false;
+      const exp = Date.parse(record.expires_at);
+      if (!Number.isFinite(exp)) return false;
+      return now >= exp;
+    }
+    function buildHumanActiveRecord(opts = {}) {
+      const now = opts.now != null ? opts.now : Date.now();
+      const ttlMin = opts.ttlMinutes != null ? opts.ttlMinutes : DEFAULT_TTL_MINUTES;
+      const nowIso = new Date(now).toISOString();
+      const expiresIso = new Date(now + ttlMin * 60 * 1e3).toISOString();
+      const prev = opts.prev && opts.prev.status === STATES.HUMAN_ACTIVE ? opts.prev : null;
+      return {
+        status: STATES.HUMAN_ACTIVE,
+        channel: _seg(opts.channel),
+        account_id: _seg(opts.accountId),
+        customer_id: _seg(opts.customerId),
+        started_at: prev ? prev.started_at : nowIso,
+        last_human_message_at: nowIso,
+        expires_at: expiresIso,
+        reason: opts.reason || (prev ? prev.reason : "human_outbound_message"),
+        last_human_message_id: opts.humanMessageId != null ? String(opts.humanMessageId) : prev ? prev.last_human_message_id : null
+      };
+    }
+    function buildBotActiveRecord(opts = {}) {
+      const now = opts.now != null ? opts.now : Date.now();
+      const nowIso = new Date(now).toISOString();
+      return {
+        status: STATES.BOT_ACTIVE,
+        channel: _seg(opts.channel),
+        account_id: _seg(opts.accountId),
+        customer_id: _seg(opts.customerId),
+        started_at: nowIso,
+        last_human_message_at: opts.prev ? opts.prev.last_human_message_at || null : null,
+        expires_at: null,
+        reason: opts.reason || "released",
+        last_human_message_id: opts.prev ? opts.prev.last_human_message_id || null : null
+      };
+    }
+    function decideInbound(record, now, opts = {}) {
+      if (opts.enabled === false) return { action: "process", reason: "takeover_disabled" };
+      if (!record || record.status !== STATES.HUMAN_ACTIVE) {
+        return { action: "process", reason: "bot_active" };
+      }
+      if (isExpired(record, now)) return { action: "release_then_process", reason: "ttl_expired" };
+      return { action: "ignore", reason: "human_active" };
+    }
+    function isBotEcho(echo = {}, opts = {}) {
+      if (echo.isKnownBotMid) return true;
+      if (opts.botAppId && echo.appId != null && String(echo.appId) === String(opts.botAppId)) return true;
+      return false;
+    }
+    async function decideInboundSafe(reader, now, opts = {}) {
+      let record;
+      try {
+        record = await reader();
+      } catch (e) {
+        if (opts.storeConfigured && opts.failClosed) return { action: "ignore", reason: "store_error_fail_closed", error: String(e && e.message) };
+        return { action: "process", reason: "store_error_best_effort", error: String(e && e.message) };
+      }
+      return decideInbound(record, now, opts);
+    }
+    async function getState(store, key) {
+      const raw = await store.get(key);
+      return parseRecord(raw);
+    }
+    function _writeTtlSec(ttlMinutes) {
+      const ttlMin = ttlMinutes != null ? ttlMinutes : DEFAULT_TTL_MINUTES;
+      return ttlMin * 60 + BOT_ACTIVE_KEEP_SEC;
+    }
+    async function setHumanActive(store, opts = {}) {
+      const key = stateKey(opts.channel, opts.accountId, opts.customerId);
+      const now = opts.now != null ? opts.now : Date.now();
+      const prev = await getState(store, key);
+      const wasActive = !!(prev && prev.status === STATES.HUMAN_ACTIVE && !isExpired(prev, now));
+      const record = buildHumanActiveRecord({ ...opts, now, prev });
+      await store.set(key, JSON.stringify(record), _writeTtlSec(opts.ttlMinutes));
+      return { record, wasActive };
+    }
+    async function renewOnHumanMessage(store, opts = {}) {
+      return setHumanActive(store, opts);
+    }
+    async function releaseToBot(store, opts = {}) {
+      const key = stateKey(opts.channel, opts.accountId, opts.customerId);
+      const now = opts.now != null ? opts.now : Date.now();
+      const prev = await getState(store, key);
+      const record = buildBotActiveRecord({ ...opts, now, prev });
+      await store.set(key, JSON.stringify(record), BOT_ACTIVE_KEEP_SEC);
+      return { record };
+    }
+    async function recordBotSentMessage(store, id, ttlSec) {
+      if (!id) return;
+      await store.set(botSentKey(id), "1", ttlSec || BOT_SENT_TTL_SEC);
+    }
+    async function isBotSentMessage(store, id) {
+      if (!id) return false;
+      return !!await store.get(botSentKey(id));
+    }
+    module2.exports = {
+      STATES,
+      DEFAULT_TTL_MINUTES,
+      BOT_SENT_TTL_SEC,
+      BOT_ACTIVE_KEEP_SEC,
+      stateKey,
+      botSentKey,
+      parseRecord,
+      isExpired,
+      buildHumanActiveRecord,
+      buildBotActiveRecord,
+      decideInbound,
+      decideInboundSafe,
+      isBotEcho,
+      getState,
+      setHumanActive,
+      renewOnHumanMessage,
+      releaseToBot,
+      recordBotSentMessage,
+      isBotSentMessage
+    };
+  }
+});
+
 // prompts/retail.js
 var require_retail = __commonJS({
   "prompts/retail.js"(exports2, module2) {
@@ -1364,6 +1526,7 @@ var { createDedup } = require_dedup();
 var { createRateLimiter, DEFAULT_LIMITS } = require_ratelimit();
 var ordersLib = require_orders();
 var keys = require_keys();
+var takeover = require_takeover();
 var { RETAIL_SYSTEM_PROMPT } = require_retail();
 var { FARMER_SYSTEM_PROMPT } = require_farmer();
 var bootLog = createLogger({ level: (process.env.LOG_LEVEL || "info").toLowerCase(), isProd: String(process.env.NODE_ENV).toLowerCase() === "production" });
@@ -1386,7 +1549,7 @@ var app = express();
 app.use(express.json({ verify: (req, _res, buf) => {
   req.rawBody = buf;
 } }));
-var ADMIN_PATHS = ["/chat", "/test", "/catalog", "/aidebug", "/feeddebug", "/refresh", "/release", "/admin", "/api/chat", "/api/transcribe"];
+var ADMIN_PATHS = ["/chat", "/test", "/catalog", "/aidebug", "/feeddebug", "/refresh", "/release", "/admin", "/api/admin", "/api/chat", "/api/transcribe"];
 app.use(ADMIN_PATHS, requireAdmin);
 app.get("/health", (_req, res) => res.json({ status: "ok", ts: (/* @__PURE__ */ new Date()).toISOString() }));
 app.get("/ready", async (_req, res) => {
@@ -1580,6 +1743,118 @@ var handoffState = {
     _memHandoff.delete(String(senderId));
   }
 };
+var HUMAN_TAKEOVER_ENABLED = CONFIG.HUMAN_TAKEOVER_ENABLED;
+var HUMAN_TAKEOVER_TTL_MINUTES = CONFIG.HUMAN_TAKEOVER_TTL_MINUTES;
+var HUMAN_TAKEOVER_FAIL_CLOSED = CONFIG.HUMAN_TAKEOVER_FAIL_CLOSED;
+var META_APP_ID = CONFIG.META_APP_ID;
+var TAKEOVER_ECHO_SEEN_TTL = 24 * 60 * 60;
+if (HUMAN_TAKEOVER_ENABLED) log.info("human_takeover_enabled", { ttlMinutes: HUMAN_TAKEOVER_TTL_MINUTES, failClosed: HUMAN_TAKEOVER_FAIL_CLOSED, redis: HAS_UPSTASH });
+else log.info("human_takeover_disabled", { note: "HUMAN_TAKEOVER_ENABLED=false \u2014 bot behaves as before." });
+function hashConvKey(key) {
+  return crypto.createHash("sha256").update(String(key)).digest("hex").slice(0, 16);
+}
+async function takeoverReadStrict(key) {
+  if (HAS_UPSTASH) {
+    const raw2 = await _upstash(["get", key]);
+    return takeover.parseRecord(raw2);
+  }
+  const raw = _kvAlive(key) ? _memKV.get(key) : null;
+  return takeover.parseRecord(raw);
+}
+async function getInboundTakeoverDecision(channel, accountId, customerId, now) {
+  if (!HUMAN_TAKEOVER_ENABLED) return { action: "process", reason: "takeover_disabled" };
+  const key = takeover.stateKey(channel, accountId, customerId);
+  const dec = await takeover.decideInboundSafe(() => takeoverReadStrict(key), now, {
+    ttlMinutes: HUMAN_TAKEOVER_TTL_MINUTES,
+    storeConfigured: HAS_UPSTASH,
+    failClosed: HUMAN_TAKEOVER_FAIL_CLOSED
+  });
+  if (dec.reason === "store_error_fail_closed" || dec.reason === "store_error_best_effort") {
+    log.error("takeover_state_read_error", { channel, convKey: hashConvKey(key), decision: dec.action });
+  }
+  return dec;
+}
+async function isHumanActiveNow(channel, accountId, customerId, now) {
+  if (!HUMAN_TAKEOVER_ENABLED) return false;
+  const dec = await getInboundTakeoverDecision(channel, accountId, customerId, now);
+  return dec.action === "ignore";
+}
+async function markHumanActive(channel, accountId, customerId, opts = {}) {
+  const now = opts.now != null ? opts.now : Date.now();
+  const key = takeover.stateKey(channel, accountId, customerId);
+  let wasActive = false;
+  try {
+    const { wasActive: w } = await takeover.setHumanActive(kvStore, {
+      channel,
+      accountId,
+      customerId,
+      now,
+      ttlMinutes: HUMAN_TAKEOVER_TTL_MINUTES,
+      reason: opts.reason || "human_outbound_message",
+      humanMessageId: opts.humanMessageId
+    });
+    wasActive = w;
+  } catch (e) {
+    log.error("takeover_set_failed", { channel, key: hashConvKey(key), err: String(e && e.message) });
+    return;
+  }
+  const h = hashConvKey(key);
+  if (wasActive) log.info("human_takeover_extended", { channel, convKey: h, reason: opts.reason || "human_outbound_message" });
+  else log.info("human_takeover_started", { channel, convKey: h, reason: opts.reason || "human_outbound_message" });
+}
+async function releaseTakeover(channel, accountId, customerId, opts = {}) {
+  const now = opts.now != null ? opts.now : Date.now();
+  const key = takeover.stateKey(channel, accountId, customerId);
+  try {
+    await takeover.releaseToBot(kvStore, { channel, accountId, customerId, now, reason: opts.reason || "released" });
+  } catch (e) {
+    log.error("takeover_release_failed", { channel, key: hashConvKey(key), err: String(e && e.message) });
+    return;
+  }
+  const h = hashConvKey(key);
+  if (opts.reason === "ttl_expired") {
+    log.info("human_takeover_expired", { channel, convKey: h });
+    log.info("bot_reactivated", { channel, convKey: h });
+  } else log.info("human_takeover_released", { channel, convKey: h, reason: opts.reason || "released" });
+}
+async function recordBotSent(id) {
+  if (!id) return;
+  try {
+    await takeover.recordBotSentMessage(kvStore, id, takeover.BOT_SENT_TTL_SEC);
+  } catch (e) {
+    log.warn("bot_sent_record_fail", { err: String(e && e.message) });
+  }
+}
+async function recordBotSentFromMetaResponse(res) {
+  try {
+    if (!res || typeof res.json !== "function") return;
+    const j = await res.json();
+    const id = j && (j.message_id || Array.isArray(j.messages) && j.messages[0] && j.messages[0].id);
+    if (id) await recordBotSent(id);
+  } catch (e) {
+  }
+}
+async function handleOutboundEcho(channel, pageId, event) {
+  const echo = event.message || {};
+  const mid = echo.mid;
+  const customerId = event.recipient && event.recipient.id;
+  if (!customerId) return;
+  if (mid) {
+    let firstTime = true;
+    try {
+      firstTime = await kvStore.setNX("takeover_echo_seen:" + mid, "1", TAKEOVER_ECHO_SEEN_TTL);
+    } catch (e) {
+    }
+    if (!firstTime) return;
+  }
+  let knownBot = false;
+  try {
+    knownBot = mid ? await takeover.isBotSentMessage(kvStore, mid) : false;
+  } catch (e) {
+  }
+  if (takeover.isBotEcho({ mid, appId: echo.app_id, isKnownBotMid: knownBot }, { botAppId: META_APP_ID })) return;
+  await markHumanActive(channel, pageId, customerId, { reason: "human_outbound_message", humanMessageId: mid });
+}
 var _memHistory = /* @__PURE__ */ new Map();
 var HISTORY_MAX = 12;
 var HISTORY_TTL = 6 * 60 * 60;
@@ -2328,15 +2603,16 @@ function metaHeaders(token) {
   return { "content-type": "application/json", authorization: `Bearer ${token || PAGE_ACCESS_TOKEN}` };
 }
 async function sendMessenger(recipientId, text, pageId) {
-  await fetchSafe(`${META_GRAPH}/me/messages`, {
+  const res = await fetchSafe(`${META_GRAPH}/me/messages`, {
     method: "POST",
     headers: metaHeaders(pageTokenFor(pageId)),
     body: JSON.stringify({ recipient: { id: recipientId }, message: { text } })
   }, { timeoutMs: 15e3, retries: 2, log });
+  await recordBotSentFromMetaResponse(res);
 }
 async function sendMessengerImage(recipientId, url, pageId) {
   try {
-    await fetchSafe(`${META_GRAPH}/me/messages`, {
+    const res = await fetchSafe(`${META_GRAPH}/me/messages`, {
       method: "POST",
       headers: metaHeaders(pageTokenFor(pageId)),
       body: JSON.stringify({
@@ -2344,6 +2620,7 @@ async function sendMessengerImage(recipientId, url, pageId) {
         message: { attachment: { type: "image", payload: { url, is_reusable: true } } }
       })
     }, { timeoutMs: 15e3, retries: 1, log });
+    await recordBotSentFromMetaResponse(res);
   } catch (e) {
     log.error("send_messenger_image_failed", { err: String(e.message) });
   }
@@ -2382,19 +2659,21 @@ async function takeThreadControl(senderId, pageId) {
   }
 }
 async function sendWhatsApp(to, text) {
-  await fetchSafe(`${META_GRAPH}/${WHATSAPP_PHONE_ID}/messages`, {
+  const res = await fetchSafe(`${META_GRAPH}/${WHATSAPP_PHONE_ID}/messages`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${WHATSAPP_TOKEN}` },
     body: JSON.stringify({ messaging_product: "whatsapp", to, text: { body: text } })
   }, { timeoutMs: 15e3, retries: 2, log });
+  await recordBotSentFromMetaResponse(res);
 }
 async function sendWhatsAppImage(to, url) {
   try {
-    await fetchSafe(`${META_GRAPH}/${WHATSAPP_PHONE_ID}/messages`, {
+    const res = await fetchSafe(`${META_GRAPH}/${WHATSAPP_PHONE_ID}/messages`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${WHATSAPP_TOKEN}` },
       body: JSON.stringify({ messaging_product: "whatsapp", to, type: "image", image: { link: url } })
     }, { timeoutMs: 15e3, retries: 1, log });
+    await recordBotSentFromMetaResponse(res);
   } catch (e) {
     log.error("send_whatsapp_image_failed", { err: String(e.message) });
   }
@@ -2457,7 +2736,16 @@ app.post("/webhook", async (req, res) => {
         const chanMode = resolved.mode;
         log.info("incoming", { channel, pageId: String(pageId), mode: chanMode });
         for (const event of entry.messaging || []) {
-          if (!event.message || event.message.is_echo) continue;
+          if (HUMAN_TAKEOVER_ENABLED && (event.pass_thread_control || event.take_thread_control)) {
+            const cust = event.sender && event.sender.id;
+            if (cust) await releaseTakeover(channel, pageId, cust, { reason: "conversation_closed" });
+            continue;
+          }
+          if (event.message && event.message.is_echo) {
+            if (HUMAN_TAKEOVER_ENABLED) await handleOutboundEcho(channel, pageId, event);
+            continue;
+          }
+          if (!event.message) continue;
           const senderId = event.sender.id;
           const mid = event.message.mid;
           const convId = memKey(channel, pageId, senderId);
@@ -2467,6 +2755,18 @@ app.post("/webhook", async (req, res) => {
             if (await handoffState.has(channel, pageId, senderId)) {
               await dedup.complete(mid);
               continue;
+            }
+            if (HUMAN_TAKEOVER_ENABLED) {
+              const now = Date.now();
+              const dec = await getInboundTakeoverDecision(channel, pageId, senderId, now);
+              if (dec.action === "ignore") {
+                log.info("customer_message_ignored_during_human_takeover", { channel, convKey: hashConvKey(takeover.stateKey(channel, pageId, senderId)), reason: dec.reason });
+                await dedup.complete(mid);
+                continue;
+              }
+              if (dec.action === "release_then_process") {
+                await releaseTakeover(channel, pageId, senderId, { reason: "ttl_expired", now });
+              }
             }
             const rl = await rateLimiter.check("wh:" + channel + ":" + senderId, DEFAULT_LIMITS.webhookSenderPerMin, 60);
             if (!rl.allowed) {
@@ -2510,6 +2810,11 @@ app.post("/webhook", async (req, res) => {
               continue;
             }
             const reply = await askAI(userText, channel, convId, chanMode);
+            if (HUMAN_TAKEOVER_ENABLED && await isHumanActiveNow(channel, pageId, senderId, Date.now())) {
+              log.info("bot_reply_cancelled_due_to_human_takeover", { channel, convKey: hashConvKey(takeover.stateKey(channel, pageId, senderId)) });
+              await dedup.complete(mid);
+              continue;
+            }
             if (reply.text) await sendMessenger(senderId, reply.text, pageId);
             if (reply.images) for (const u of reply.images) await sendMessengerImage(senderId, u, pageId);
             let orderText = reply.order;
@@ -2562,6 +2867,18 @@ ${orderText}
                 await dedup.complete(mid);
                 continue;
               }
+              if (HUMAN_TAKEOVER_ENABLED) {
+                const now = Date.now();
+                const dec = await getInboundTakeoverDecision("whatsapp", waPhoneId, from, now);
+                if (dec.action === "ignore") {
+                  log.info("customer_message_ignored_during_human_takeover", { channel: "whatsapp", convKey: hashConvKey(takeover.stateKey("whatsapp", waPhoneId, from)), reason: dec.reason });
+                  await dedup.complete(mid);
+                  continue;
+                }
+                if (dec.action === "release_then_process") {
+                  await releaseTakeover("whatsapp", waPhoneId, from, { reason: "ttl_expired", now });
+                }
+              }
               const rl = await rateLimiter.check("wh:whatsapp:" + from, DEFAULT_LIMITS.webhookSenderPerMin, 60);
               if (!rl.allowed) {
                 log.warn("rate_limited_sender", { channel: "whatsapp", pageId: String(waPhoneId || "") });
@@ -2609,6 +2926,11 @@ ${orderText}
                 continue;
               }
               const reply = await askAI(userText, "whatsapp", convId, waMode);
+              if (HUMAN_TAKEOVER_ENABLED && await isHumanActiveNow("whatsapp", waPhoneId, from, Date.now())) {
+                log.info("bot_reply_cancelled_due_to_human_takeover", { channel: "whatsapp", convKey: hashConvKey(takeover.stateKey("whatsapp", waPhoneId, from)) });
+                await dedup.complete(mid);
+                continue;
+              }
               if (reply.text) await sendWhatsApp(from, reply.text);
               if (reply.images) for (const u of reply.images) await sendWhatsAppImage(from, u);
               let waOrder = reply.order;
@@ -2658,9 +2980,60 @@ app.get("/release", async (req, res) => {
     }
   }
   await handoffState.clear(channel, pageId, senderId);
+  if (HUMAN_TAKEOVER_ENABLED) await releaseTakeover(channel, pageId, senderId, { reason: "manual_release" });
   await historyStore.clear(memKey(channel, pageId, senderId));
   log.info("release_ok", { channel, pageId: String(pageId) });
   return res.send(`\u062A\u0645 \u0625\u0631\u062C\u0627\u0639 \u0627\u0644\u0645\u062D\u0627\u062F\u062B\u0629 ${senderId} \u0644\u0644\u0628\u0648\u062A \u2714 (${channel})`);
+});
+function _takeoverParams(src) {
+  return {
+    channel: src && src.channel ? String(src.channel) : "",
+    accountId: src && (src.account_id != null ? String(src.account_id) : src.accountId != null ? String(src.accountId) : ""),
+    customerId: src && (src.customer_id != null ? String(src.customer_id) : src.customerId != null ? String(src.customerId) : ""),
+    reason: src && src.reason ? String(src.reason) : void 0
+  };
+}
+app.post("/api/admin/conversations/takeover", async (req, res) => {
+  const p = _takeoverParams(req.body || {});
+  if (!p.channel || !p.accountId || !p.customerId) {
+    return res.status(400).json({ error: "channel, account_id, customer_id \u0645\u0637\u0644\u0648\u0628\u064A\u0646" });
+  }
+  await markHumanActive(p.channel, p.accountId, p.customerId, { reason: p.reason || "admin_takeover" });
+  return res.json({ ok: true, status: takeover.STATES.HUMAN_ACTIVE, channel: p.channel });
+});
+app.post("/api/admin/conversations/release", async (req, res) => {
+  const p = _takeoverParams(req.body || {});
+  if (!p.channel || !p.accountId || !p.customerId) {
+    return res.status(400).json({ error: "channel, account_id, customer_id \u0645\u0637\u0644\u0648\u0628\u064A\u0646" });
+  }
+  await releaseTakeover(p.channel, p.accountId, p.customerId, { reason: p.reason || "manual_release" });
+  await handoffState.clear(p.channel, p.accountId, p.customerId);
+  return res.json({ ok: true, status: takeover.STATES.BOT_ACTIVE, channel: p.channel });
+});
+app.get("/api/admin/conversations/status", async (req, res) => {
+  const p = _takeoverParams(req.query || {});
+  if (!p.channel || !p.accountId || !p.customerId) {
+    return res.status(400).json({ error: "channel, account_id, customer_id \u0645\u0637\u0644\u0648\u0628\u064A\u0646" });
+  }
+  const key = takeover.stateKey(p.channel, p.accountId, p.customerId);
+  let record = null;
+  try {
+    record = await takeoverReadStrict(key);
+  } catch (e) {
+    return res.status(502).json({ error: "state_read_failed" });
+  }
+  const now = Date.now();
+  const expired = record && record.status === takeover.STATES.HUMAN_ACTIVE ? takeover.isExpired(record, now) : false;
+  const effectiveStatus = record ? expired ? takeover.STATES.BOT_ACTIVE : record.status : takeover.STATES.BOT_ACTIVE;
+  return res.json({
+    ok: true,
+    convKey: hashConvKey(key),
+    // هاش فقط — بدون معرّفات خام
+    status: effectiveStatus,
+    expired,
+    record: record || null
+    // السجل يحتوي معرّفات القناة/الحساب/العميل ووقت — بدون نص/أسرار
+  });
 });
 app.get("/admin/delete-data", async (req, res) => {
   const channel = req.query.channel;

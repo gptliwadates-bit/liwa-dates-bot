@@ -1,9 +1,8 @@
 // =============================================================================
-// Liwa Dates Bot — PRODUCTION BUNDLE (generated).
-// Source of truth = modular project (webhook-server.js + lib/*.js + prompts/*.js)
-// inside liwa-dates-bot-HARDENED.zip. Edit the SOURCE, then re-bundle with:
-//   npx esbuild webhook-server.js --bundle --platform=node --format=cjs --external:express --outfile=deploy/webhook-server.js
-// Do NOT hand-edit this file.
+// Liwa Dates Bot — PRODUCTION BUNDLE (generated). v2: degraded-safe boot.
+// Missing ADMIN_KEY no longer crashes the app (admin routes return 503 instead).
+// Source of truth = modular project in liwa-dates-bot-HARDENED.zip.
+// Re-bundle: npx esbuild webhook-server.js --bundle --platform=node --format=cjs --external:express --outfile=deploy/webhook-server.js
 // =============================================================================
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __commonJS = (cb, mod) => function __require() {
@@ -123,16 +122,10 @@ var require_env = __commonJS({
       const { config, errors, warnings } = validateEnv(env);
       const log2 = logger || console;
       for (const w of warnings) log2.warn ? log2.warn(w) : console.warn("[config] " + w);
+      config.configErrors = errors;
       if (errors.length) {
-        const msg = "Missing production-required env vars: " + errors.join(", ");
-        if (config.isProd) {
-          log2.error ? log2.error(msg) : console.error("[config] " + msg);
-          const err = new Error(msg);
-          err.fatalConfig = true;
-          throw err;
-        } else {
-          log2.warn ? log2.warn(msg) : console.warn("[config] " + msg);
-        }
+        const msg = "Missing production-required env vars: " + errors.join(", ") + ". Running in DEGRADED mode (admin routes 503 if ADMIN_KEY missing; webhooks rejected if APP_SECRET missing). Set these in the host environment.";
+        log2.error ? log2.error(msg) : console.error("[config] " + msg);
       }
       return config;
     }

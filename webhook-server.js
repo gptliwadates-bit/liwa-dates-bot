@@ -3700,6 +3700,50 @@ var CHAT_PAGE = `<!DOCTYPE html>
 </script>
 </body>
 </html>`;
+app.get("/try", (req, res) => {
+  const html = CHAT_PAGE.replace(
+    'var key = new URLSearchParams(location.search).get("key") || "";',
+    'var mode = new URLSearchParams(location.search).get("mode") || "";'
+  ).replace(
+    '"/api/chat?key="+encodeURIComponent(key)',
+    '"/try/api/chat?mode="+encodeURIComponent(mode)'
+  ).replace(
+    '"/api/transcribe?key="+encodeURIComponent(key)',
+    '"/try/api/transcribe?mode="+encodeURIComponent(mode)'
+  );
+  res.set("content-type", "text/html; charset=utf-8").send(html);
+});
+app.post("/try/api/chat", async (req, res) => {
+  try {
+    const rl = await rateLimiter.check("trychat:" + (req.ip || "anon"), DEFAULT_LIMITS.apiChatPerMin, 60);
+    if (!rl.allowed) return res.status(429).json({ reply: "\u0637\u0644\u0628\u0627\u062A \u0643\u062A\u064A\u0631 \u0628\u0633\u0631\u0639\u0629 \u2014 \u0627\u0646\u062A\u0638\u0631 \u0644\u062D\u0638\u0629 \u0648\u062C\u0631\u0651\u0628 \u062A\u0627\u0646\u064A.", handoff: false, order: null });
+    const history = Array.isArray(req.body.messages) ? req.body.messages.slice(-20) : [];
+    const mode = req.query.mode === "farmer" ? "farmer" : null;
+    const raw = await openaiReply(history, mode);
+    if (raw === null) return res.json({ reply: "\u0645\u0639\u0644\u0634 \u062D\u0635\u0644 \u062E\u0637\u0623\u060C \u062C\u0631\u0651\u0628 \u062A\u0627\u0646\u064A.", handoff: false, order: null });
+    const parsed = parseReply(raw, "webchat", mode);
+    const lastUser = [...history].reverse().find((m) => m.role === "user");
+    if (lastUser && needsEscalation(lastUser.content)) parsed.handoff = true;
+    res.json(parsed);
+  } catch (e) {
+    console.error("/try/api/chat error:", e);
+    res.json({ reply: "\u0645\u0639\u0644\u0634 \u062D\u0635\u0644 \u062E\u0637\u0623\u060C \u062C\u0631\u0651\u0628 \u062A\u0627\u0646\u064A.", handoff: false, order: null });
+  }
+});
+app.post("/try/api/transcribe", express.raw({ type: "*/*", limit: "12mb" }), async (req, res) => {
+  try {
+    const rl = await rateLimiter.check("trytranscribe:" + (req.ip || "anon"), DEFAULT_LIMITS.apiTranscribePerHour, 3600);
+    if (!rl.allowed) return res.status(429).json({ error: "rate_limited", text: "" });
+    if (!req.body || !req.body.length) return res.json({ text: "" });
+    const mime = req.headers["content-type"] || "audio/webm";
+    const ext = mime.includes("ogg") ? "ogg" : mime.includes("mp") ? "mp4" : mime.includes("wav") ? "wav" : "webm";
+    const text = await transcribeAudio(req.body, `audio.${ext}`, mime);
+    res.json({ text: text || "" });
+  } catch (e) {
+    console.error("/try/api/transcribe error:", e);
+    res.json({ text: "" });
+  }
+});
 app.get("/catalog", (req, res) => {
   res.set("content-type", "text/plain; charset=utf-8").send(
     "\u0622\u062E\u0631 \u062A\u062D\u062F\u064A\u062B: " + (liveCatalogUpdatedAt ? liveCatalogUpdatedAt.toISOString() : "\u0644\u0645 \u064A\u064F\u062D\u0645\u0651\u0644 \u0628\u0639\u062F") + " | \u0623\u0633\u0639\u0627\u0631 \u0627\u0644\u0641\u064A\u062F: " + Object.keys(feedPrices).length + "\n\n" + (liveCatalog || "(\u0627\u0644\u0643\u062A\u0627\u0644\u0648\u062C \u0641\u0627\u0636\u064A \u2014 \u0628\u064A\u0633\u062A\u062E\u062F\u0645 \u0627\u0644\u0623\u0633\u0639\u0627\u0631 \u0627\u0644\u062B\u0627\u0628\u062A\u0629)")

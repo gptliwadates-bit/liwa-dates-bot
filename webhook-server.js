@@ -1,4 +1,3 @@
-// Liwa Dates Bot — PRODUCTION BUNDLE v8 (generated). Rich product cards w/ URL button (Messenger/IG generic, WhatsApp cta_url) + multi-number WhatsApp. Source in HARDENED zip.
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __commonJS = (cb, mod) => function __require() {
   try {
@@ -627,6 +626,31 @@ var require_cards = __commonJS({
         }
       };
     }
+    function buildMessengerCarouselPayload2(recipientId, products = []) {
+      const elements = (Array.isArray(products) ? products : []).slice(0, 10).map((p) => {
+        p = p || {};
+        const safeUrl = String(p.url || "");
+        const buttonTitle = truncate(p.buttonTitle || DEFAULT_MSGR_BUTTON, 20);
+        const el = {
+          title: truncate(p.title, 80) || " ",
+          buttons: [{ type: "web_url", url: safeUrl, title: buttonTitle }]
+        };
+        if (safeUrl) el.default_action = { type: "web_url", url: safeUrl };
+        const sub = truncate(p.subtitle, 80);
+        if (sub) el.subtitle = sub;
+        if (p.imageUrl) el.image_url = String(p.imageUrl);
+        return el;
+      });
+      return {
+        recipient: { id: recipientId },
+        message: {
+          attachment: {
+            type: "template",
+            payload: { template_type: "generic", elements }
+          }
+        }
+      };
+    }
     function buildWhatsAppCTAPayload2(to, opts = {}) {
       const { bodyText, buttonUrl, imageUrl } = opts;
       const displayText = truncate(opts.buttonText || DEFAULT_WA_BUTTON, 20);
@@ -646,6 +670,7 @@ var require_cards = __commonJS({
     module2.exports = {
       truncate,
       buildMessengerCardPayload: buildMessengerCardPayload2,
+      buildMessengerCarouselPayload: buildMessengerCarouselPayload2,
       buildWhatsAppCTAPayload: buildWhatsAppCTAPayload2,
       DEFAULT_MSGR_BUTTON,
       DEFAULT_WA_BUTTON
@@ -1636,7 +1661,7 @@ var { buildChannelConfig, resolveChannel, isEmptyConfig } = require_channels();
 var { loadPricingConfig } = require_config();
 var sheetsLib = require_sheets();
 var { fetchSafe } = require_http();
-var { buildMessengerCardPayload, buildWhatsAppCTAPayload } = require_cards();
+var { buildMessengerCardPayload, buildMessengerCarouselPayload, buildWhatsAppCTAPayload } = require_cards();
 var { downloadSafe, DEFAULT_ALLOWED_SUFFIXES } = require_download();
 var arabicLib = require_arabic();
 var { createDedup } = require_dedup();
@@ -2480,7 +2505,7 @@ function autoProductEntries(text, existing) {
   if (!explicit && NON_PRODUCT_TOPIC.test(text)) return [];
   const matches = deterministicImages(text, explicit);
   if (explicit) return matches;
-  return matches.length === 1 ? matches : [];
+  return matches;
 }
 function addUtm(url, source) {
   try {
@@ -2513,6 +2538,25 @@ function extractPriceLine(text) {
     }
   }
   return "";
+}
+function priceLineFor(text, core) {
+  if (!text || !core) return "";
+  const tokens = String(core).split(/\s+/).filter((w) => w.length >= 3);
+  if (!tokens.length) return "";
+  let best = "";
+  let bestScore = 0;
+  for (const raw of String(text).split(/\n+/)) {
+    if (!/درهم|درهماً|\baed\b|\bdhs?\b/i.test(raw)) continue;
+    const score = tokens.reduce((n, t) => n + (raw.includes(t) ? 1 : 0), 0);
+    if (score > bestScore) {
+      const t = raw.replace(/^[\s\-•*×]+/, "").trim();
+      if (t) {
+        best = t;
+        bestScore = score;
+      }
+    }
+  }
+  return best;
 }
 function stripProductLink(text, base) {
   if (!text) return "";
@@ -2554,23 +2598,29 @@ function parseReply(raw, source) {
   const entries = autoProductEntries(text, images);
   const finalImages = entries.map((e) => e.img).filter(Boolean);
   let product = null;
-  if (entries.length === 1 && entries[0].link) {
-    const e0 = entries[0];
-    const base = e0.link.split("?")[0];
-    const captionBase = text;
-    const productUrl = addUtm(e0.link, source);
-    product = {
-      title: e0.core || "",
-      subtitle: extractPriceLine(captionBase),
-      imageUrl: e0.img || "",
-      url: productUrl,
-      // كابشن الكارت = رد الموديل بدون تكرار اللينك (الزر بيوفّره)
-      caption: stripProductLink(captionBase, base)
-    };
-    if (text.indexOf(base) === -1) text += `
+  let products = [];
+  const linked = entries.filter((e) => e.link);
+  if (linked.length) {
+    products = linked.map((e) => ({
+      title: e.core || "",
+      subtitle: priceLineFor(text, e.core) || (linked.length === 1 ? extractPriceLine(text) : ""),
+      imageUrl: e.img || "",
+      url: addUtm(e.link, source)
+    }));
+    if (linked.length === 1) {
+      const e0 = linked[0];
+      const base = e0.link.split("?")[0];
+      const productUrl = products[0].url;
+      product = {
+        ...products[0],
+        // كابشن الكارت = رد الموديل بدون تكرار اللينك (الزر بيوفّره)
+        caption: stripProductLink(text, base)
+      };
+      if (text.indexOf(base) === -1) text += `
 ${productUrl}`;
+    }
   }
-  return { text, handoff, order, images: finalImages, product };
+  return { text, handoff, order, images: finalImages, product, products };
 }
 async function transcribeAudio(buffer, filename, mime) {
   try {
@@ -2811,6 +2861,15 @@ async function sendMessengerCard(recipientId, product, pageId) {
   }, { timeoutMs: 15e3, retries: 2, log });
   await recordBotSentFromMetaResponse(res);
 }
+async function sendMessengerCarousel(recipientId, products, pageId) {
+  const body = buildMessengerCarouselPayload(recipientId, products);
+  const res = await fetchSafe(`${META_GRAPH}/me/messages`, {
+    method: "POST",
+    headers: metaHeaders(pageTokenFor(pageId)),
+    body: JSON.stringify(body)
+  }, { timeoutMs: 15e3, retries: 2, log });
+  await recordBotSentFromMetaResponse(res);
+}
 async function passToHuman(senderId, pageId) {
   try {
     await fetchSafe(`${META_GRAPH}/me/pass_thread_control`, {
@@ -3030,7 +3089,28 @@ app.post("/webhook", async (req, res) => {
               await dedup.complete(mid);
               continue;
             }
-            if (RICH_CARDS_ENABLED && reply.product && reply.product.url) {
+            if (RICH_CARDS_ENABLED && reply.products && reply.products.length > 1) {
+              const caption = (reply.text || "").trim();
+              try {
+                if (caption) await sendMessenger(senderId, caption, pageId);
+                await sendMessengerCarousel(senderId, reply.products, pageId);
+              } catch (e) {
+                log.error("messenger_carousel_failed", { err: String(e.message) });
+                if (!caption && reply.text) {
+                  try {
+                    await sendMessenger(senderId, reply.text, pageId);
+                  } catch (_) {
+                  }
+                }
+                if (reply.images) for (const u of reply.images) await sendMessengerImage(senderId, u, pageId);
+                for (const p of reply.products) {
+                  try {
+                    await sendMessenger(senderId, p.url, pageId);
+                  } catch (_) {
+                  }
+                }
+              }
+            } else if (RICH_CARDS_ENABLED && reply.product && reply.product.url) {
               const p = reply.product;
               const caption = (p.caption || reply.text || "").trim();
               try {
@@ -3166,7 +3246,19 @@ ${orderText}
                 await dedup.complete(mid);
                 continue;
               }
-              if (RICH_CARDS_ENABLED && reply.product && reply.product.url) {
+              if (RICH_CARDS_ENABLED && reply.products && reply.products.length > 1) {
+                if (reply.text) await sendWhatsApp(from, reply.text, waPhoneId);
+                for (const p of reply.products.slice(0, 5)) {
+                  const bodyText = [p.title, p.subtitle].filter(Boolean).join("\n");
+                  const ok = await sendWhatsAppCTA(
+                    from,
+                    { bodyText, buttonUrl: p.url, buttonText: "\u0627\u0641\u062A\u062D \u0627\u0644\u0645\u0646\u062A\u062C", imageUrl: p.imageUrl },
+                    waPhoneId
+                  );
+                  if (!ok) await sendWhatsApp(from, `${p.title}${p.subtitle ? " \u2014 " + p.subtitle : ""}
+${p.url}`, waPhoneId);
+                }
+              } else if (RICH_CARDS_ENABLED && reply.product && reply.product.url) {
                 const p = reply.product;
                 const ok = await sendWhatsAppCTA(
                   from,

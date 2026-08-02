@@ -608,7 +608,7 @@ var require_cards = __commonJS({
           message: {
             attachment: {
               type: "template",
-              payload: { template_type: "generic", elements: [element] }
+              payload: { template_type: "generic", image_aspect_ratio: "square", elements: [element] }
             }
           }
         };
@@ -646,7 +646,7 @@ var require_cards = __commonJS({
         message: {
           attachment: {
             type: "template",
-            payload: { template_type: "generic", elements }
+            payload: { template_type: "generic", image_aspect_ratio: "square", elements }
           }
         }
       };
@@ -2204,10 +2204,11 @@ async function refreshCatalog() {
       if (link) line += ` | \u0627\u0644\u0631\u0627\u0628\u0637: ${link}`;
       if (img) line += ` | \u0635\u0648\u0631\u0629: ${img}`;
       lines.push(line);
-      parentInfo[p.id] = { name, img, link };
+      const priceLabel = /غير محدد/.test(pricesPart) ? "" : `${pricesPart}${isFarmTool ? " (\u0642\u0628\u0644 \u0627\u0644\u0636\u0631\u064A\u0628\u0629)" : ""}`;
+      parentInfo[p.id] = { name, img, link, farmTool: isFarmTool, price: priceLabel };
       if (img) {
         const core = name.replace(/^تمر\s+/, "").trim();
-        if (core.length >= 4) imgs.push({ core, img, link, primary: true, line: core });
+        if (core.length >= 4) imgs.push({ core, img, link, primary: true, line: core, price: priceLabel, farmTool: isFarmTool });
       }
     }
     for (const v of variations) {
@@ -2219,7 +2220,10 @@ async function refreshCatalog() {
       const base = (par ? par.name : v.name || "").replace(/^تمر\s+/, "").trim();
       const core = `${base} ${flavor}`.trim();
       const vlink = par ? par.link : v.permalink || "";
-      if (core.length >= 4) imgs.push({ core, img: vimg, link: vlink, primary: false, line: base });
+      const vFarm = par ? !!par.farmTool : false;
+      const vpr = priceFor(v.id, v.prices && v.prices.price, vFarm);
+      const vprice = vpr ? `${vpr} \u062F\u0631\u0647\u0645${vFarm ? " (\u0642\u0628\u0644 \u0627\u0644\u0636\u0631\u064A\u0628\u0629)" : ""}` : par ? par.price : "";
+      if (core.length >= 4) imgs.push({ core, img: vimg, link: vlink, primary: false, line: base, price: vprice, farmTool: vFarm });
     }
     if (lines.length) {
       liveCatalog = lines.join("\n");
@@ -2567,7 +2571,7 @@ function stripProductLink(text, base) {
   }
   return out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
 }
-function parseReply(raw, source) {
+function parseReply(raw, source, mode) {
   let text = raw || "";
   let order = null;
   const oStart = text.indexOf(ORDER_OPEN);
@@ -2595,7 +2599,8 @@ function parseReply(raw, source) {
     else if (handoff) text = "\u0644\u062D\u0638\u0627\u062A \u0645\u0646 \u0641\u0636\u0644\u0643 \u2014 \u0628\u062D\u0648\u0651\u0644\u0643 \u0644\u0623\u062D\u062F \u0645\u0648\u0638\u0641\u064A\u0646\u0627 \u0648\u0631\u0627\u062D \u064A\u0633\u0627\u0639\u062F\u0643 \u062D\u0627\u0644\u0627\u064B \u{1F64F}";
     else if (images.length) text = "\u062A\u0641\u0636\u0651\u0644 \u0635\u0648\u0631\u0629 \u0627\u0644\u0645\u0646\u062A\u062C \u{1F334}";
   }
-  const entries = autoProductEntries(text, images);
+  let entries = autoProductEntries(text, images);
+  if (mode === "farmer") entries = entries.filter((e) => e.farmTool);
   const finalImages = entries.map((e) => e.img).filter(Boolean);
   let product = null;
   let products = [];
@@ -2603,7 +2608,8 @@ function parseReply(raw, source) {
   if (linked.length) {
     products = linked.map((e) => ({
       title: e.core || "",
-      subtitle: priceLineFor(text, e.core) || (linked.length === 1 ? extractPriceLine(text) : ""),
+      // السعر: من نص الرد لو الموديل كتبه، وإلا من الكتالوج (عشان الكارت دايمًا يوريّ سعر).
+      subtitle: priceLineFor(text, e.core) || e.price || (linked.length === 1 ? extractPriceLine(text) : ""),
       imageUrl: e.img || "",
       url: addUtm(e.link, source)
     }));
@@ -2685,7 +2691,7 @@ async function askAI(userMessage, source, convId, mode) {
     else history = [{ role: "user", content: userMessage }];
     const raw = await openaiReply(history, mode);
     if (raw === null) return { text: "\u0645\u0639\u0644\u0634 \u062D\u0635\u0644 \u062E\u0637\u0623 \u0628\u0633\u064A\u0637\u060C \u0645\u0645\u0643\u0646 \u062A\u0628\u0639\u062A \u062A\u0627\u0646\u064A\u061F", handoff: false, order: null };
-    const parsed = parseReply(raw, source);
+    const parsed = parseReply(raw, source, mode);
     if (mode === "farmer" && !parsed.handoff && parsed.text) {
       if (arabicLib.isFarmerHandoffReply(parsed.text)) parsed.handoff = true;
     }
@@ -3495,7 +3501,7 @@ app.post("/api/chat", async (req, res) => {
     const mode = req.query.mode === "farmer" ? "farmer" : null;
     const raw = await openaiReply(history, mode);
     if (raw === null) return res.json({ reply: "\u0645\u0639\u0644\u0634 \u062D\u0635\u0644 \u062E\u0637\u0623\u060C \u062C\u0631\u0651\u0628 \u062A\u0627\u0646\u064A.", handoff: false, order: null });
-    const parsed = parseReply(raw, "webchat");
+    const parsed = parseReply(raw, "webchat", mode);
     const lastUser = [...history].reverse().find((m) => m.role === "user");
     if (lastUser && needsEscalation(lastUser.content)) parsed.handoff = true;
     if (!parsed.order) {

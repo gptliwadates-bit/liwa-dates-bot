@@ -1,4 +1,4 @@
-// Liwa Dates Bot — PRODUCTION BUNDLE v6 (generated). Catalog UA+retry, wider handoff, retail pre-tax note. Source in HARDENED zip.
+// Liwa Dates Bot — PRODUCTION BUNDLE v8 (generated). Rich product cards w/ URL button (Messenger/IG generic, WhatsApp cta_url) + multi-number WhatsApp. Source in HARDENED zip.
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __commonJS = (cb, mod) => function __require() {
   try {
@@ -40,6 +40,7 @@ var require_env = __commonJS({
       const PAGE_ACCESS_TOKEN2 = env.PAGE_ACCESS_TOKEN || "";
       const WHATSAPP_TOKEN2 = env.WHATSAPP_TOKEN || "";
       const PAGE_TOKENS_RAW = env.PAGE_TOKENS || "";
+      const WHATSAPP_TOKENS_RAW = env.WHATSAPP_TOKENS || "";
       const hasMetaToken = !!(PAGE_ACCESS_TOKEN2 || WHATSAPP_TOKEN2 || PAGE_TOKENS_RAW);
       const allowlistConfigured = !!(env.FACEBOOK_ALLOWED_IDS || env.IG_ALLOWED_IDS || env.WHATSAPP_ALLOWED_PHONE_NUMBER_IDS || env.FARMER_IDS || env.FARMER_IG_ALLOWED_IDS || env.FARMER_WHATSAPP_ALLOWED_PHONE_NUMBER_IDS || env.ALLOWED_IDS);
       if (prod) {
@@ -66,6 +67,16 @@ var require_env = __commonJS({
           warnings.push("PAGE_TOKENS is not valid JSON \u2014 ignored.");
         }
       }
+      let WHATSAPP_TOKENS = {};
+      if (WHATSAPP_TOKENS_RAW) {
+        try {
+          const parsed = JSON.parse(WHATSAPP_TOKENS_RAW);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) WHATSAPP_TOKENS = parsed;
+          else warnings.push("WHATSAPP_TOKENS must be a JSON object {phone_number_id: token} \u2014 ignored.");
+        } catch (e) {
+          warnings.push("WHATSAPP_TOKENS is not valid JSON \u2014 ignored.");
+        }
+      }
       const config = {
         NODE_ENV: env.NODE_ENV || "development",
         isProd: prod,
@@ -77,10 +88,15 @@ var require_env = __commonJS({
         PAGE_ACCESS_TOKEN: PAGE_ACCESS_TOKEN2,
         PAGE_TOKENS: PAGE_TOKENS2,
         WHATSAPP_TOKEN: WHATSAPP_TOKEN2,
+        WHATSAPP_TOKENS,
         WHATSAPP_PHONE_ID: env.WHATSAPP_PHONE_ID || "",
         BOT_ENABLED: BOT_ENABLED2,
         WHATSAPP_ENABLED: parseBool(env.WHATSAPP_ENABLED, true),
         ALLOW_UNSIGNED_WEBHOOKS: parseBool(env.ALLOW_UNSIGNED_WEBHOOKS, false),
+        // Rich product cards: send a card with a URL button (Messenger/IG generic or
+        // button template, WhatsApp cta_url) instead of plain text + inline link when
+        // the reply is about one specific product. Set false to revert to plain text.
+        RICH_CARDS_ENABLED: parseBool(env.RICH_CARDS_ENABLED, true),
         // Human Takeover — bot goes silent when a human agent handles a conversation.
         HUMAN_TAKEOVER_ENABLED: parseBool(env.HUMAN_TAKEOVER_ENABLED, true),
         HUMAN_TAKEOVER_TTL_MINUTES: num(env.HUMAN_TAKEOVER_TTL_MINUTES, 30),
@@ -134,7 +150,12 @@ var require_env = __commonJS({
       }
       return config;
     }
-    module2.exports = { parseBool, num, splitIds, isProdEnv, validateEnv, loadConfig: loadConfig2 };
+    function whatsappTokenFor2(config, phoneId) {
+      const tokens = config && config.WHATSAPP_TOKENS || {};
+      const perNumber = phoneId != null ? tokens[String(phoneId)] : void 0;
+      return perNumber || config && config.WHATSAPP_TOKEN || "";
+    }
+    module2.exports = { parseBool, num, splitIds, isProdEnv, validateEnv, loadConfig: loadConfig2, whatsappTokenFor: whatsappTokenFor2 };
   }
 });
 
@@ -555,6 +576,80 @@ var require_http = __commonJS({
       }
     }
     module2.exports = { fetchSafe: fetchSafe2, isTransientStatus, isNetworkError, backoffMs, safeText, TRANSIENT_STATUS };
+  }
+});
+
+// lib/cards.js
+var require_cards = __commonJS({
+  "lib/cards.js"(exports2, module2) {
+    "use strict";
+    var DEFAULT_MSGR_BUTTON = "\u0634\u0648\u0641 \u0627\u0644\u0645\u0646\u062A\u062C \u{1F334}";
+    var DEFAULT_WA_BUTTON = "\u0627\u0641\u062A\u062D \u0627\u0644\u0645\u0646\u062A\u062C";
+    function truncate(s, n) {
+      s = String(s == null ? "" : s).trim();
+      if (!Number.isFinite(n) || n <= 0 || s.length <= n) return s;
+      return s.slice(0, Math.max(1, n - 1)).trim() + "\u2026";
+    }
+    function buildMessengerCardPayload2(recipientId, product = {}) {
+      const { title, subtitle, imageUrl, url } = product;
+      const buttonTitle = truncate(product.buttonTitle || DEFAULT_MSGR_BUTTON, 20);
+      const safeUrl = String(url || "");
+      const button = { type: "web_url", url: safeUrl, title: buttonTitle };
+      if (imageUrl) {
+        const element = {
+          title: truncate(title, 80),
+          image_url: String(imageUrl),
+          default_action: { type: "web_url", url: safeUrl },
+          buttons: [button]
+        };
+        const sub2 = truncate(subtitle, 80);
+        if (sub2) element.subtitle = sub2;
+        return {
+          recipient: { id: recipientId },
+          message: {
+            attachment: {
+              type: "template",
+              payload: { template_type: "generic", elements: [element] }
+            }
+          }
+        };
+      }
+      const t = truncate(title, 80);
+      const sub = truncate(subtitle, 80);
+      const text = truncate([t, sub].filter(Boolean).join("\n") || t || " ", 640);
+      return {
+        recipient: { id: recipientId },
+        message: {
+          attachment: {
+            type: "template",
+            payload: { template_type: "button", text, buttons: [button] }
+          }
+        }
+      };
+    }
+    function buildWhatsAppCTAPayload2(to, opts = {}) {
+      const { bodyText, buttonUrl, imageUrl } = opts;
+      const displayText = truncate(opts.buttonText || DEFAULT_WA_BUTTON, 20);
+      const interactive = {
+        type: "cta_url",
+        body: { text: truncate(bodyText, 1024) || " " },
+        action: {
+          name: "cta_url",
+          parameters: { display_text: displayText, url: String(buttonUrl || "") }
+        }
+      };
+      if (imageUrl) {
+        interactive.header = { type: "image", image: { link: String(imageUrl) } };
+      }
+      return { messaging_product: "whatsapp", to, type: "interactive", interactive };
+    }
+    module2.exports = {
+      truncate,
+      buildMessengerCardPayload: buildMessengerCardPayload2,
+      buildWhatsAppCTAPayload: buildWhatsAppCTAPayload2,
+      DEFAULT_MSGR_BUTTON,
+      DEFAULT_WA_BUTTON
+    };
   }
 });
 
@@ -1533,7 +1628,7 @@ var require_farmer = __commonJS({
 // webhook-server.js
 var express = require("express");
 var crypto = require("crypto");
-var { loadConfig } = require_env();
+var { loadConfig, whatsappTokenFor } = require_env();
 var { createLogger, maskPhone } = require_log();
 var { makeRequireAdmin } = require_auth();
 var { checkWebhook } = require_signature();
@@ -1541,6 +1636,7 @@ var { buildChannelConfig, resolveChannel, isEmptyConfig } = require_channels();
 var { loadPricingConfig } = require_config();
 var sheetsLib = require_sheets();
 var { fetchSafe } = require_http();
+var { buildMessengerCardPayload, buildWhatsAppCTAPayload } = require_cards();
 var { downloadSafe, DEFAULT_ALLOWED_SUFFIXES } = require_download();
 var arabicLib = require_arabic();
 var { createDedup } = require_dedup();
@@ -1608,6 +1704,9 @@ function pageTokenFor(id) {
 }
 var WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 var WHATSAPP_PHONE_ID = process.env.WHATSAPP_PHONE_ID;
+function waTokenFor(phoneId) {
+  return whatsappTokenFor(CONFIG, phoneId);
+}
 var APP_SECRET = process.env.APP_SECRET;
 var ADMIN_KEY = CONFIG.ADMIN_KEY;
 var AI_MAX_TOKENS = CONFIG.AI_MAX_TOKENS;
@@ -1798,6 +1897,7 @@ var HUMAN_TAKEOVER_ENABLED = CONFIG.HUMAN_TAKEOVER_ENABLED;
 var HUMAN_TAKEOVER_TTL_MINUTES = CONFIG.HUMAN_TAKEOVER_TTL_MINUTES;
 var HUMAN_TAKEOVER_FAIL_CLOSED = CONFIG.HUMAN_TAKEOVER_FAIL_CLOSED;
 var META_APP_ID = CONFIG.META_APP_ID;
+var RICH_CARDS_ENABLED = CONFIG.RICH_CARDS_ENABLED;
 var TAKEOVER_ECHO_SEEN_TTL = 24 * 60 * 60;
 if (HUMAN_TAKEOVER_ENABLED) log.info("human_takeover_enabled", { ttlMinutes: HUMAN_TAKEOVER_TTL_MINUTES, failClosed: HUMAN_TAKEOVER_FAIL_CLOSED, redis: HAS_UPSTASH });
 else log.info("human_takeover_disabled", { note: "HUMAN_TAKEOVER_ENABLED=false \u2014 bot behaves as before." });
@@ -2404,6 +2504,25 @@ function utmizeText(text, source) {
     return addUtm(u, source) + trail;
   });
 }
+function extractPriceLine(text) {
+  if (!text) return "";
+  for (const raw of String(text).split(/\n+/)) {
+    if (/درهم|درهماً|\baed\b|\bdhs?\b/i.test(raw)) {
+      const t = raw.replace(/^[\s\-•*×]+/, "").trim();
+      if (t) return t;
+    }
+  }
+  return "";
+}
+function stripProductLink(text, base) {
+  if (!text) return "";
+  let out = String(text);
+  if (base) {
+    const esc = base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    out = out.replace(new RegExp(esc + "\\S*", "g"), "");
+  }
+  return out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
 function parseReply(raw, source) {
   let text = raw || "";
   let order = null;
@@ -2434,12 +2553,24 @@ function parseReply(raw, source) {
   }
   const entries = autoProductEntries(text, images);
   const finalImages = entries.map((e) => e.img).filter(Boolean);
+  let product = null;
   if (entries.length === 1 && entries[0].link) {
-    const base = entries[0].link.split("?")[0];
+    const e0 = entries[0];
+    const base = e0.link.split("?")[0];
+    const captionBase = text;
+    const productUrl = addUtm(e0.link, source);
+    product = {
+      title: e0.core || "",
+      subtitle: extractPriceLine(captionBase),
+      imageUrl: e0.img || "",
+      url: productUrl,
+      // كابشن الكارت = رد الموديل بدون تكرار اللينك (الزر بيوفّره)
+      caption: stripProductLink(captionBase, base)
+    };
     if (text.indexOf(base) === -1) text += `
-${addUtm(entries[0].link, source)}`;
+${productUrl}`;
   }
-  return { text, handoff, order, images: finalImages };
+  return { text, handoff, order, images: finalImages, product };
 }
 async function transcribeAudio(buffer, filename, mime) {
   try {
@@ -2462,15 +2593,16 @@ var MEDIA_ALLOWED_SUFFIXES = DEFAULT_ALLOWED_SUFFIXES.concat(["fbsbx.com", "cdni
 var MEDIA_MAX_BYTES = 16 * 1024 * 1024;
 var MEDIA_AUDIO_TYPES = [/^audio\//, /^video\//, /^application\/octet-stream$/];
 var MEDIA_ANY_TYPES = [/^audio\//, /^video\//, /^image\//, /^application\/octet-stream$/];
-async function downloadWhatsAppMedia(mediaId) {
+async function downloadWhatsAppMedia(mediaId, fromPhoneId) {
+  const token = waTokenFor(fromPhoneId);
   try {
     const infoRes = await fetchSafe(`https://graph.facebook.com/v21.0/${mediaId}`, {
-      headers: { authorization: `Bearer ${WHATSAPP_TOKEN}` }
+      headers: { authorization: `Bearer ${token}` }
     }, { timeoutMs: 15e3, log });
     const info = await infoRes.json();
     if (!info.url) return null;
     const { buffer, contentType } = await downloadSafe(info.url, {
-      headers: { authorization: `Bearer ${WHATSAPP_TOKEN}` },
+      headers: { authorization: `Bearer ${token}` },
       allowedTypes: MEDIA_AUDIO_TYPES,
       allowedSuffixes: MEDIA_ALLOWED_SUFFIXES,
       maxBytes: MEDIA_MAX_BYTES,
@@ -2670,6 +2802,15 @@ async function sendMessengerImage(recipientId, url, pageId) {
     log.error("send_messenger_image_failed", { err: String(e.message) });
   }
 }
+async function sendMessengerCard(recipientId, product, pageId) {
+  const body = buildMessengerCardPayload(recipientId, product);
+  const res = await fetchSafe(`${META_GRAPH}/me/messages`, {
+    method: "POST",
+    headers: metaHeaders(pageTokenFor(pageId)),
+    body: JSON.stringify(body)
+  }, { timeoutMs: 15e3, retries: 2, log });
+  await recordBotSentFromMetaResponse(res);
+}
 async function passToHuman(senderId, pageId) {
   try {
     await fetchSafe(`${META_GRAPH}/me/pass_thread_control`, {
@@ -2703,24 +2844,53 @@ async function takeThreadControl(senderId, pageId) {
     return false;
   }
 }
-async function sendWhatsApp(to, text) {
-  const res = await fetchSafe(`${META_GRAPH}/${WHATSAPP_PHONE_ID}/messages`, {
+async function sendWhatsApp(to, text, fromPhoneId) {
+  const phoneId = fromPhoneId || WHATSAPP_PHONE_ID;
+  const res = await fetchSafe(`${META_GRAPH}/${phoneId}/messages`, {
     method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${WHATSAPP_TOKEN}` },
+    headers: { "content-type": "application/json", authorization: `Bearer ${waTokenFor(fromPhoneId)}` },
     body: JSON.stringify({ messaging_product: "whatsapp", to, text: { body: text } })
   }, { timeoutMs: 15e3, retries: 2, log });
   await recordBotSentFromMetaResponse(res);
 }
-async function sendWhatsAppImage(to, url) {
+async function sendWhatsAppImage(to, url, fromPhoneId) {
   try {
-    const res = await fetchSafe(`${META_GRAPH}/${WHATSAPP_PHONE_ID}/messages`, {
+    const phoneId = fromPhoneId || WHATSAPP_PHONE_ID;
+    const res = await fetchSafe(`${META_GRAPH}/${phoneId}/messages`, {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${WHATSAPP_TOKEN}` },
+      headers: { "content-type": "application/json", authorization: `Bearer ${waTokenFor(fromPhoneId)}` },
       body: JSON.stringify({ messaging_product: "whatsapp", to, type: "image", image: { link: url } })
     }, { timeoutMs: 15e3, retries: 1, log });
     await recordBotSentFromMetaResponse(res);
   } catch (e) {
     log.error("send_whatsapp_image_failed", { err: String(e.message) });
+  }
+}
+async function sendWhatsAppCTA(to, opts, fromPhoneId) {
+  const phoneId = fromPhoneId || WHATSAPP_PHONE_ID;
+  const post = async (payload) => {
+    const res = await fetchSafe(`${META_GRAPH}/${phoneId}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${waTokenFor(fromPhoneId)}` },
+      body: JSON.stringify(payload)
+    }, { timeoutMs: 15e3, retries: 1, log });
+    await recordBotSentFromMetaResponse(res);
+  };
+  try {
+    await post(buildWhatsAppCTAPayload(to, opts));
+    return true;
+  } catch (e) {
+    if (opts && opts.imageUrl) {
+      try {
+        await post(buildWhatsAppCTAPayload(to, { ...opts, imageUrl: "" }));
+        return true;
+      } catch (e2) {
+        log.error("send_whatsapp_cta_failed", { err: String(e2.message) });
+        return false;
+      }
+    }
+    log.error("send_whatsapp_cta_failed", { err: String(e.message) });
+    return false;
   }
 }
 function webhookSignatureResult(req) {
@@ -2860,8 +3030,28 @@ app.post("/webhook", async (req, res) => {
               await dedup.complete(mid);
               continue;
             }
-            if (reply.text) await sendMessenger(senderId, reply.text, pageId);
-            if (reply.images) for (const u of reply.images) await sendMessengerImage(senderId, u, pageId);
+            if (RICH_CARDS_ENABLED && reply.product && reply.product.url) {
+              const p = reply.product;
+              const caption = (p.caption || reply.text || "").trim();
+              try {
+                if (caption) await sendMessenger(senderId, caption, pageId);
+                await sendMessengerCard(
+                  senderId,
+                  { title: p.title, subtitle: p.subtitle, imageUrl: p.imageUrl, url: p.url, buttonTitle: "\u0634\u0648\u0641 \u0627\u0644\u0645\u0646\u062A\u062C \u{1F334}" },
+                  pageId
+                );
+              } catch (e) {
+                log.error("messenger_card_failed", { err: String(e.message) });
+                try {
+                  await sendMessenger(senderId, p.url, pageId);
+                } catch (_) {
+                }
+                if (reply.images) for (const u of reply.images) await sendMessengerImage(senderId, u, pageId);
+              }
+            } else {
+              if (reply.text) await sendMessenger(senderId, reply.text, pageId);
+              if (reply.images) for (const u of reply.images) await sendMessengerImage(senderId, u, pageId);
+            }
             let orderText = reply.order;
             if (!orderText) {
               const auto = detectOrder(await historyStore.get(convId));
@@ -2935,10 +3125,10 @@ ${orderText}
               if (msg.type === "text") {
                 userText = msg.text.body;
               } else if ((msg.type === "audio" || msg.type === "voice") && msg[msg.type] && msg[msg.type].id) {
-                const media = await downloadWhatsAppMedia(msg[msg.type].id);
+                const media = await downloadWhatsAppMedia(msg[msg.type].id, waPhoneId);
                 if (media) userText = await transcribeAudio(media.buffer, "audio.ogg", media.mime);
                 if (!userText) {
-                  await sendWhatsApp(from, "\u0645\u0627 \u0642\u062F\u0631\u062A \u0623\u0641\u0647\u0645 \u0627\u0644\u0631\u0633\u0627\u0644\u0629 \u0627\u0644\u0635\u0648\u062A\u064A\u0629\u060C \u0645\u0645\u0643\u0646 \u062A\u0643\u062A\u0628\u0647\u0627 \u0623\u0648 \u062A\u0628\u0639\u062A\u0647\u0627 \u062A\u0627\u0646\u064A\u061F \u{1F64F}");
+                  await sendWhatsApp(from, "\u0645\u0627 \u0642\u062F\u0631\u062A \u0623\u0641\u0647\u0645 \u0627\u0644\u0631\u0633\u0627\u0644\u0629 \u0627\u0644\u0635\u0648\u062A\u064A\u0629\u060C \u0645\u0645\u0643\u0646 \u062A\u0643\u062A\u0628\u0647\u0627 \u0623\u0648 \u062A\u0628\u0639\u062A\u0647\u0627 \u062A\u0627\u0646\u064A\u061F \u{1F64F}", waPhoneId);
                   await dedup.complete(mid);
                   continue;
                 }
@@ -2946,7 +3136,7 @@ ${orderText}
                 nonText = true;
               }
               if (nonText) {
-                await sendWhatsApp(from, "\u0627\u0633\u062A\u0644\u0645\u0646\u0627 \u0631\u0633\u0627\u0644\u062A\u0643 \u{1F64F} \u0628\u062D\u0648\u0651\u0644\u0643 \u0644\u0623\u062D\u062F \u0645\u0648\u0638\u0641\u064A\u0646\u0627 \u064A\u0642\u062F\u0631 \u064A\u0634\u0648\u0641\u0647\u0627 \u0648\u064A\u0633\u0627\u0639\u062F\u0643 \u062D\u0627\u0644\u0627\u064B.");
+                await sendWhatsApp(from, "\u0627\u0633\u062A\u0644\u0645\u0646\u0627 \u0631\u0633\u0627\u0644\u062A\u0643 \u{1F64F} \u0628\u062D\u0648\u0651\u0644\u0643 \u0644\u0623\u062D\u062F \u0645\u0648\u0638\u0641\u064A\u0646\u0627 \u064A\u0642\u062F\u0631 \u064A\u0634\u0648\u0641\u0647\u0627 \u0648\u064A\u0633\u0627\u0639\u062F\u0643 \u062D\u0627\u0644\u0627\u064B.", waPhoneId);
                 await handoffState.set("whatsapp", waPhoneId, from, { reason: "non_text_attachment", appId: null });
                 await notifyHandoff("\u0648\u0627\u062A\u0633\u0627\u0628", from, "[\u0645\u0631\u0641\u0642 \u063A\u064A\u0631 \u0646\u0635\u064A \u2014 \u0635\u0648\u0631\u0629/\u0635\u0648\u062A/\u0645\u0633\u062A\u0646\u062F]");
                 await dedup.complete(mid);
@@ -2957,13 +3147,13 @@ ${orderText}
                 continue;
               }
               if (arabicLib.isDataDeletionRequest(userText)) {
-                await sendWhatsApp(from, DELETION_CONFIRM_MSG);
+                await sendWhatsApp(from, DELETION_CONFIRM_MSG, waPhoneId);
                 await deleteCustomerData("whatsapp", waPhoneId, from);
                 await dedup.complete(mid);
                 continue;
               }
               if (wantsHuman(userText)) {
-                await sendWhatsApp(from, HANDOFF_MESSAGE);
+                await sendWhatsApp(from, HANDOFF_MESSAGE, waPhoneId);
                 await handoffState.set("whatsapp", waPhoneId, from, { reason: "keyword", appId: null });
                 await notifyHandoff("\u0648\u0627\u062A\u0633\u0627\u0628", from, userText);
                 log.info("handoff_keyword", { channel: "whatsapp", pageId: String(waPhoneId || "") });
@@ -2976,8 +3166,21 @@ ${orderText}
                 await dedup.complete(mid);
                 continue;
               }
-              if (reply.text) await sendWhatsApp(from, reply.text);
-              if (reply.images) for (const u of reply.images) await sendWhatsAppImage(from, u);
+              if (RICH_CARDS_ENABLED && reply.product && reply.product.url) {
+                const p = reply.product;
+                const ok = await sendWhatsAppCTA(
+                  from,
+                  { bodyText: p.caption || reply.text || "", buttonUrl: p.url, buttonText: "\u0627\u0641\u062A\u062D \u0627\u0644\u0645\u0646\u062A\u062C", imageUrl: p.imageUrl },
+                  waPhoneId
+                );
+                if (!ok) {
+                  if (reply.text) await sendWhatsApp(from, reply.text, waPhoneId);
+                  if (reply.images) for (const u of reply.images) await sendWhatsAppImage(from, u, waPhoneId);
+                }
+              } else {
+                if (reply.text) await sendWhatsApp(from, reply.text, waPhoneId);
+                if (reply.images) for (const u of reply.images) await sendWhatsAppImage(from, u, waPhoneId);
+              }
               let waOrder = reply.order;
               if (!waOrder) {
                 const auto = detectOrder(await historyStore.get(convId));

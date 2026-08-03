@@ -2386,17 +2386,13 @@ ${text}`);
 }
 refreshSiteInfo();
 setInterval(refreshSiteInfo, 12 * 60 * 60 * 1e3);
-setTimeout(() => {
-  try {
-    const pages = /* @__PURE__ */ new Set([
-      ...CONFIG.allowlists.FARMER_IDS || [],
-      ...CONFIG.allowlists.FACEBOOK_ALLOWED_IDS || []
-    ]);
-    for (const pid of pages) setupMessengerProfile(pid);
-  } catch (e) {
-    log.error("menu_boot_setup_failed", { err: String(e && e.message) });
-  }
-}, 3e3);
+var _menuSetupDone = /* @__PURE__ */ new Set();
+function ensureMenuSetup(pageId) {
+  const id = String(pageId || "");
+  if (!id || _menuSetupDone.has(id)) return;
+  _menuSetupDone.add(id);
+  setupMessengerProfile(id);
+}
 var _refreshPromise = null;
 async function ensureFresh() {
   const sixH = 6 * 60 * 60 * 1e3;
@@ -3153,6 +3149,7 @@ app.post("/webhook", async (req, res) => {
         }
         const chanMode = resolved.mode;
         log.info("incoming", { channel, pageId: String(pageId), mode: chanMode });
+        if (channel === "messenger") ensureMenuSetup(pageId);
         for (const event of entry.messaging || []) {
           if (HUMAN_TAKEOVER_ENABLED && (event.pass_thread_control || event.take_thread_control)) {
             const cust = event.sender && event.sender.id;

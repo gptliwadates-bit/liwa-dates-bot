@@ -2691,7 +2691,20 @@ function parseReply(raw, source, mode) {
     else if (images.length) text = "\u062A\u0641\u0636\u0651\u0644 \u0635\u0648\u0631\u0629 \u0627\u0644\u0645\u0646\u062A\u062C \u{1F334}";
   }
   let entries = autoProductEntries(text, images);
-  if (mode === "farmer") entries = entries.filter((e) => SUPPLY_NAME.test(String(e.core || "")));
+  if (mode === "farmer") {
+    entries = entries.filter((e) => SUPPLY_NAME.test(String(e.core || "")));
+    if (entries.length && Array.isArray(productImages) && productImages.length) {
+      const byLine = /* @__PURE__ */ new Map();
+      for (const p of productImages) {
+        if (!p || !p.link || !SUPPLY_NAME.test(String(p.core || ""))) continue;
+        const key = p.line || p.core;
+        const cur = byLine.get(key);
+        if (!cur || p.primary && !cur.primary) byLine.set(key, p);
+      }
+      const allSupplies = [...byLine.values()];
+      if (allSupplies.length) entries = allSupplies;
+    }
+  }
   const finalImages = entries.map((e) => e.img).filter(Boolean);
   let product = null;
   let products = [];

@@ -2353,6 +2353,13 @@ async function ensureFresh() {
       _refreshing = false;
     }
     if (!liveCatalog) await loadCatalogSnapshot();
+  } else if (!siteInfo) {
+    _refreshing = true;
+    try {
+      await refreshSiteInfo();
+    } finally {
+      _refreshing = false;
+    }
   }
 }
 var DEGRADED_NOTE = `

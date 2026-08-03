@@ -2593,13 +2593,6 @@ var IMG_INTENT = /صور[ةه]?|بالصوره|picture|image|photo/i;
 var NON_PRODUCT_TOPIC = /توصيل|الشحن|شحن|فرع|فروع|مواعيد|ساعات العمل|استرجاع/;
 var UNAVAILABLE_HINT = /مش متوفر|غير متوفر|مش موجود|مش من منتجاتنا|مو متوفر|مو موجود|نفد|خلص المخزون|not available|out of stock|unavailable|don'?t have|do not have/i;
 var SUPPLY_NAME = /تخزين|تجفيف|صيني[ةه]|كرتون|صندوق تخزين|شاش|ليبل|تغليف|تعبئة|بالي?ت|شبك/;
-var RETAIL_DATE_NAME = /مجدول|خلاص|عجو[ةه]|صقعي|خضري|سكري|دبس|معجون|مكسرات|كرانشلي|شوكولا|مملّ?ح|محشي|رطب برحي|برحي طازج|علب[ةه] هدايا|ضيافة|هدايا/;
-function isRetailDateProduct(entry) {
-  const c = String(entry && entry.core || "");
-  if (!c) return false;
-  if (SUPPLY_NAME.test(c)) return false;
-  return RETAIL_DATE_NAME.test(c);
-}
 function autoProductEntries(text, existing) {
   if (!text) return [];
   if (UNAVAILABLE_HINT.test(text) && !(existing && existing.length)) return [];
@@ -2698,7 +2691,7 @@ function parseReply(raw, source, mode) {
     else if (images.length) text = "\u062A\u0641\u0636\u0651\u0644 \u0635\u0648\u0631\u0629 \u0627\u0644\u0645\u0646\u062A\u062C \u{1F334}";
   }
   let entries = autoProductEntries(text, images);
-  if (mode === "farmer") entries = entries.filter((e) => !isRetailDateProduct(e));
+  if (mode === "farmer") entries = entries.filter((e) => SUPPLY_NAME.test(String(e.core || "")));
   const finalImages = entries.map((e) => e.img).filter(Boolean);
   let product = null;
   let products = [];

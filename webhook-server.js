@@ -2592,7 +2592,7 @@ function deterministicImages(text, lenient) {
 var IMG_INTENT = /صور[ةه]?|بالصوره|picture|image|photo/i;
 var NON_PRODUCT_TOPIC = /توصيل|الشحن|شحن|فرع|فروع|مواعيد|ساعات العمل|استرجاع/;
 var UNAVAILABLE_HINT = /مش متوفر|غير متوفر|مش موجود|مش من منتجاتنا|مو متوفر|مو موجود|نفد|خلص المخزون|not available|out of stock|unavailable|don'?t have|do not have/i;
-var SUPPLY_NAME = /تخزين|تجفيف|صيني[ةه]|كرتون|صندوق تخزين|شاش|ليبل|تغليف|تعبئة|بالي?ت|شبك/;
+var SUPPLY_NAME = /تخزين|تجفيف|شاش|ليبل/;
 function autoProductEntries(text, existing) {
   if (!text) return [];
   if (UNAVAILABLE_HINT.test(text) && !(existing && existing.length)) return [];
@@ -2712,8 +2712,9 @@ function parseReply(raw, source, mode) {
   if (linked.length) {
     products = linked.map((e) => ({
       title: e.core || "",
-      // السعر: من نص الرد لو الموديل كتبه، وإلا من الكتالوج (عشان الكارت دايمًا يوريّ سعر).
-      subtitle: priceLineFor(text, e.core) || e.price || (linked.length === 1 ? extractPriceLine(text) : ""),
+      // السعر: في وضع المزارعين نعتمد على سعر الكتالوج مباشرة (لأننا بنعرض كل المستلزمات مش بس
+      // اللي ذكرها الموديل، فمطابقة نص الرد بتلخبط). في الريتيل: من نص الرد وإلا الكتالوج.
+      subtitle: mode === "farmer" ? e.price || priceLineFor(text, e.core) || "" : priceLineFor(text, e.core) || e.price || (linked.length === 1 ? extractPriceLine(text) : ""),
       imageUrl: e.img || "",
       url: addUtm(e.link, source)
     }));

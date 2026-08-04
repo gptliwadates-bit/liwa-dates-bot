@@ -1722,6 +1722,989 @@ var require_farmer = __commonJS({
   }
 });
 
+// lib/respondio/config.js
+var require_config2 = __commonJS({
+  "lib/respondio/config.js"(exports2, module2) {
+    "use strict";
+    function _list(v) {
+      return String(v || "").split(/[,\s]+/).map((s) => s.trim()).filter(Boolean);
+    }
+    function _bool(v, dflt) {
+      if (v == null || v === "") return !!dflt;
+      return /^(1|true|yes|on)$/i.test(String(v));
+    }
+    function resolveFarmerConfig(env = {}) {
+      const matchMode = String(env.RESPONDIO_FARMER_MATCH_MODE || "any").toLowerCase() === "all" ? "all" : "any";
+      const cfg = {
+        enabled: _bool(env.RESPONDIO_FARMER_ENABLED, true),
+        // Respond.io Developer API v2
+        apiToken: env.RESPONDIO_API_TOKEN || "",
+        apiBaseUrl: (env.RESPONDIO_API_BASE_URL || "https://api.respond.io/v2").replace(/\/+$/, ""),
+        webhookSecret: env.RESPONDIO_WEBHOOK_SECRET || "",
+        // Farmer-conversation matching
+        channelIds: _list(env.RESPONDIO_FARMER_CHANNEL_IDS),
+        teamIds: _list(env.RESPONDIO_FARMER_TEAM_IDS),
+        tag: env.RESPONDIO_FARMER_TAG || "FARMER",
+        contactField: env.RESPONDIO_FARMER_CONTACT_FIELD || "customer_type",
+        contactValue: env.RESPONDIO_FARMER_CONTACT_VALUE || "farmer",
+        matchMode,
+        // 'any' | 'all'
+        // Routing for handoff
+        defaultAssigneeId: env.RESPONDIO_FARMER_DEFAULT_ASSIGNEE_ID || "",
+        defaultTeamId: env.RESPONDIO_FARMER_DEFAULT_TEAM_ID || "",
+        // Dual-reply prevention: when "respondio", the direct Meta webhook must NOT
+        // reply to farmer accounts owned by Respond.io.
+        channelOwner: (env.FARMER_CHANNEL_OWNER || "respondio").toLowerCase(),
+        // Human takeover
+        humanTakeoverEnabled: _bool(env.HUMAN_TAKEOVER_ENABLED, true),
+        humanTakeoverFailClosed: _bool(env.HUMAN_TAKEOVER_FAIL_CLOSED, true),
+        historyLimit: Math.max(5, Math.min(60, parseInt(env.RESPONDIO_FARMER_HISTORY_LIMIT || "30", 10) || 30)),
+        // Queue (QStash) — reuses the same names as the retail queue.
+        qstashUrl: env.QSTASH_URL || "",
+        qstashToken: env.QSTASH_TOKEN || "",
+        qstashCurrentSigningKey: env.QSTASH_CURRENT_SIGNING_KEY || "",
+        qstashNextSigningKey: env.QSTASH_NEXT_SIGNING_KEY || "",
+        // Persistence
+        databaseUrl: env.DATABASE_URL || env.DATABASE_POOL_URL || "",
+        adminKey: env.ADMIN_KEY || "",
+        // The mode is a CONSTANT here. Never derived from a request payload.
+        mode: "farmer"
+      };
+      return Object.freeze(cfg);
+    }
+    function enabledCriteria(cfg) {
+      return {
+        channel: cfg.channelIds.length > 0,
+        team: cfg.teamIds.length > 0,
+        tag: !!cfg.tag,
+        field: !!(cfg.contactField && cfg.contactValue)
+      };
+    }
+    module2.exports = { resolveFarmerConfig, enabledCriteria };
+  }
+});
+
+// lib/respondio/filter.js
+var require_filter = __commonJS({
+  "lib/respondio/filter.js"(exports2, module2) {
+    "use strict";
+    var { enabledCriteria } = require_config2();
+    function _norm(v) {
+      return String(v == null ? "" : v).trim().toLowerCase();
+    }
+    function isFarmerConversation(ctx = {}, cfg = {}) {
+      const crit = enabledCriteria(cfg);
+      const checks = [];
+      if (crit.channel) {
+        const cid = String(ctx.channelId == null ? "" : ctx.channelId);
+        checks.push({ name: "channel", pass: cfg.channelIds.map(String).includes(cid) });
+      }
+      if (crit.team) {
+        const teamSet = new Set([].concat(ctx.teamIds || [], ctx.assignedTeamId != null ? [ctx.assignedTeamId] : []).map(String));
+        checks.push({ name: "team", pass: cfg.teamIds.map(String).some((t) => teamSet.has(t)) });
+      }
+      if (crit.tag) {
+        const tags = (ctx.tags || []).map(_norm);
+        checks.push({ name: "tag", pass: tags.includes(_norm(cfg.tag)) });
+      }
+      if (crit.field) {
+        const fields = ctx.contactFields || {};
+        let val;
+        for (const k of Object.keys(fields)) {
+          if (_norm(k) === _norm(cfg.contactField)) {
+            val = fields[k];
+            break;
+          }
+        }
+        checks.push({ name: "field", pass: _norm(val) === _norm(cfg.contactValue) });
+      }
+      const checked = checks.map((c) => c.name);
+      const matched = checks.filter((c) => c.pass).map((c) => c.name);
+      if (checks.length === 0) {
+        return { isFarmer: false, reason: "no_criteria_configured", matched, checked };
+      }
+      const isFarmer = cfg.matchMode === "all" ? checks.every((c) => c.pass) : checks.some((c) => c.pass);
+      return {
+        isFarmer,
+        reason: isFarmer ? cfg.matchMode === "all" ? "all_criteria_matched" : "criteria_matched" : "not_a_farmer",
+        matched,
+        checked
+      };
+    }
+    module2.exports = { isFarmerConversation };
+  }
+});
+
+// lib/respondio/webhook.js
+var require_webhook = __commonJS({
+  "lib/respondio/webhook.js"(exports2, module2) {
+    "use strict";
+    var crypto2 = require("crypto");
+    function verifyRespondioSignature(rawBody, signatureHeader, secret) {
+      if (!secret || rawBody == null) return false;
+      let sig = String(signatureHeader || "").trim();
+      if (sig.startsWith("sha256=")) sig = sig.slice(7);
+      if (!sig) return false;
+      const expected = crypto2.createHmac("sha256", secret).update(rawBody).digest("hex");
+      try {
+        const a = Buffer.from(sig.toLowerCase());
+        const b = Buffer.from(expected.toLowerCase());
+        if (a.length !== b.length) return false;
+        return crypto2.timingSafeEqual(a, b);
+      } catch {
+        return false;
+      }
+    }
+    function _pick(obj, ...paths) {
+      for (const p of paths) {
+        let cur = obj;
+        let ok = true;
+        for (const key of p.split(".")) {
+          if (cur && typeof cur === "object" && key in cur) cur = cur[key];
+          else {
+            ok = false;
+            break;
+          }
+        }
+        if (ok && cur != null && cur !== "") return cur;
+      }
+      return void 0;
+    }
+    function parseIncomingEvent(body = {}) {
+      const eventType = String(_pick(body, "event_type", "event", "type") || "").toLowerCase();
+      const msg = _pick(body, "message", "data.message", "payload.message") || {};
+      const contact = _pick(body, "contact", "data.contact", "payload.contact") || {};
+      const conversation = _pick(body, "conversation", "data.conversation") || {};
+      const direction = String(_pick(msg, "direction") || _pick(body, "direction") || "").toLowerCase() || null;
+      const senderRole = String(
+        _pick(msg, "traffic", "sender.type", "sender_type") || _pick(body, "sender.type") || ""
+      ).toLowerCase();
+      const senderType = senderRole.includes("contact") || direction === "incoming" ? "contact" : senderRole.includes("bot") ? "bot" : senderRole.includes("user") || senderRole.includes("agent") || senderRole.includes("outgoing") || direction === "outgoing" ? "user" : senderRole.includes("system") ? "system" : null;
+      const tagsRaw = _pick(contact, "tags") || _pick(body, "contact.tags") || [];
+      const tags = (Array.isArray(tagsRaw) ? tagsRaw : []).map((t) => typeof t === "string" ? t : _pick(t, "name", "title") || "").filter(Boolean);
+      const cf = {};
+      const cfRaw = _pick(contact, "custom_fields", "customFields", "fields") || [];
+      if (Array.isArray(cfRaw)) {
+        for (const f of cfRaw) {
+          const k = _pick(f, "name", "key", "id");
+          if (k != null) cf[String(k)] = _pick(f, "value");
+        }
+      } else if (cfRaw && typeof cfRaw === "object") {
+        Object.assign(cf, cfRaw);
+      }
+      const directType = _pick(contact, "customer_type", "type");
+      if (directType != null && cf.customer_type == null) cf.customer_type = directType;
+      const isIncomingMessage = eventType.includes("message") && (eventType.includes("incoming") || eventType.includes("received") || eventType.includes("new")) || !!msg && direction === "incoming" || senderType === "contact";
+      const messageId = _pick(msg, "message_id", "messageId", "id") || _pick(body, "message_id", "messageId");
+      const text = String(
+        _pick(msg, "message.text", "text", "content", "body") || _pick(body, "text") || ""
+      );
+      return {
+        eventType,
+        isIncomingMessage: !!isIncomingMessage,
+        direction: direction || (isIncomingMessage ? "incoming" : null),
+        messageId: messageId != null ? String(messageId) : null,
+        conversationId: (_pick(conversation, "id", "conversation_id") || _pick(body, "conversation_id")) != null ? String(_pick(conversation, "id", "conversation_id") || _pick(body, "conversation_id")) : null,
+        contactId: (_pick(contact, "id", "contact_id") || _pick(body, "contact_id")) != null ? String(_pick(contact, "id", "contact_id") || _pick(body, "contact_id")) : null,
+        channelId: (_pick(msg, "channel_id", "channelId") || _pick(contact, "channel_id") || _pick(body, "channel_id")) != null ? String(_pick(msg, "channel_id", "channelId") || _pick(contact, "channel_id") || _pick(body, "channel_id")) : null,
+        text,
+        messageType: String(_pick(msg, "message_type", "type") || "text"),
+        senderType,
+        tags,
+        contactFields: cf,
+        assignedUserId: _pick(conversation, "assignee.id", "assigned_user_id") != null ? String(_pick(conversation, "assignee.id", "assigned_user_id")) : null,
+        assignedTeamId: _pick(conversation, "team.id", "assigned_team_id") != null ? String(_pick(conversation, "team.id", "assigned_team_id")) : null,
+        raw: body
+      };
+    }
+    module2.exports = { verifyRespondioSignature, parseIncomingEvent };
+  }
+});
+
+// lib/respondio/qstash.js
+var require_qstash = __commonJS({
+  "lib/respondio/qstash.js"(exports2, module2) {
+    "use strict";
+    var crypto2 = require("crypto");
+    function b64urlToBuf(s) {
+      s = String(s || "").replace(/-/g, "+").replace(/_/g, "/");
+      while (s.length % 4) s += "=";
+      return Buffer.from(s, "base64");
+    }
+    function b64url(buf) {
+      return Buffer.from(buf).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    }
+    function _verifyWithKey(token, key, rawBody, now) {
+      const parts = String(token || "").split(".");
+      if (parts.length !== 3) return false;
+      const [h, p, sig] = parts;
+      const expected = b64url(crypto2.createHmac("sha256", key).update(h + "." + p).digest());
+      const a = Buffer.from(sig || "");
+      const b = Buffer.from(expected);
+      if (a.length !== b.length || !crypto2.timingSafeEqual(a, b)) return false;
+      let claims;
+      try {
+        claims = JSON.parse(b64urlToBuf(p).toString("utf8"));
+      } catch {
+        return false;
+      }
+      const t = Math.floor(now / 1e3);
+      if (claims.exp && t > Number(claims.exp) + 5) return false;
+      if (claims.nbf && t < Number(claims.nbf) - 5) return false;
+      if (claims.body != null && rawBody != null) {
+        const bodyHash = b64url(crypto2.createHash("sha256").update(rawBody).digest());
+        if (String(claims.body).replace(/=+$/, "") !== bodyHash) return false;
+      }
+      return true;
+    }
+    function verifyQstashSignature(signatureHeader, rawBody, opts = {}) {
+      const token = String(signatureHeader || "").trim();
+      if (!token) return false;
+      const now = opts.now || Date.now();
+      const keys2 = [opts.currentKey, opts.nextKey].filter(Boolean);
+      if (keys2.length === 0) return false;
+      return keys2.some((k) => {
+        try {
+          return _verifyWithKey(token, k, rawBody, now);
+        } catch {
+          return false;
+        }
+      });
+    }
+    module2.exports = { verifyQstashSignature };
+  }
+});
+
+// lib/respondio/state.js
+var require_state = __commonJS({
+  "lib/respondio/state.js"(exports2, module2) {
+    "use strict";
+    var STATES = Object.freeze({ BOT_ACTIVE: "BOT_ACTIVE", HUMAN_ACTIVE: "HUMAN_ACTIVE" });
+    var K = {
+      processed: (mid) => `respondio:farmer:processed:${mid}`,
+      lock: (cid) => `respondio:farmer:lock:${cid}`,
+      state: (cid) => `respondio:farmer:state:${cid}`,
+      memory: (cid) => `respondio:farmer:memory:${cid}`,
+      botMsg: (mid) => `respondio:farmer:bot-message:${mid}`,
+      rate: (cid) => `respondio:farmer:rate:${cid}`
+    };
+    var TTL = {
+      processed: 24 * 60 * 60,
+      // 1 day
+      lock: 60,
+      // 60s processing lock
+      state: 7 * 24 * 60 * 60,
+      // 1 week
+      memory: 7 * 24 * 60 * 60,
+      botMsg: 60 * 60
+      // 1h (echoes arrive fast)
+    };
+    function _parse(raw) {
+      if (!raw) return null;
+      if (typeof raw === "object") return raw;
+      try {
+        return JSON.parse(raw);
+      } catch {
+        return null;
+      }
+    }
+    function createFarmerState(store, opts = {}) {
+      const log2 = opts.log;
+      const historyLimit = opts.historyLimit || 30;
+      async function claimMessage(messageId) {
+        if (!messageId) return false;
+        return await store.setNX(K.processed(messageId), "1", TTL.processed);
+      }
+      async function isProcessed(messageId) {
+        if (!messageId) return false;
+        return !!await store.get(K.processed(messageId));
+      }
+      async function acquireLock(contactId, token) {
+        if (!contactId) return false;
+        return await store.setNX(K.lock(contactId), String(token || "1"), TTL.lock);
+      }
+      async function releaseLock(contactId) {
+        if (!contactId) return;
+        await store.del(K.lock(contactId));
+      }
+      async function getState(contactId) {
+        return _parse(await store.get(K.state(contactId)));
+      }
+      async function setHumanActive(contactId, meta = {}) {
+        const rec = {
+          status: STATES.HUMAN_ACTIVE,
+          contact_id: String(contactId),
+          reason: meta.reason || "human_takeover",
+          last_human_message_at: (/* @__PURE__ */ new Date()).toISOString(),
+          last_human_message_id: meta.humanMessageId != null ? String(meta.humanMessageId) : null,
+          started_at: (/* @__PURE__ */ new Date()).toISOString()
+        };
+        await store.set(K.state(contactId), JSON.stringify(rec), TTL.state);
+        if (log2 && log2.info) log2.info("farmer_human_active", { reason: rec.reason });
+        return rec;
+      }
+      async function setBotActive(contactId, meta = {}) {
+        const rec = {
+          status: STATES.BOT_ACTIVE,
+          contact_id: String(contactId),
+          reason: meta.reason || "released",
+          released_at: (/* @__PURE__ */ new Date()).toISOString()
+        };
+        await store.set(K.state(contactId), JSON.stringify(rec), TTL.state);
+        if (log2 && log2.info) log2.info("farmer_bot_active", { reason: rec.reason });
+        return rec;
+      }
+      async function isHumanActive(contactId) {
+        const rec = await getState(contactId);
+        return !!(rec && rec.status === STATES.HUMAN_ACTIVE);
+      }
+      async function getMemory(contactId) {
+        const arr = _parse(await store.get(K.memory(contactId)));
+        return Array.isArray(arr) ? arr : [];
+      }
+      async function pushMemory(contactId, role, content) {
+        const arr = await getMemory(contactId);
+        arr.push({ role, content: String(content || "").slice(0, 4e3), at: Date.now() });
+        const trimmed = arr.slice(-historyLimit);
+        await store.set(K.memory(contactId), JSON.stringify(trimmed), TTL.memory);
+        return trimmed;
+      }
+      async function setMemory(contactId, arr) {
+        const trimmed = (Array.isArray(arr) ? arr : []).slice(-historyLimit);
+        await store.set(K.memory(contactId), JSON.stringify(trimmed), TTL.memory);
+        return trimmed;
+      }
+      async function markBotMessage(messageId) {
+        if (!messageId) return;
+        await store.set(K.botMsg(messageId), "1", TTL.botMsg);
+      }
+      async function isBotMessage(messageId) {
+        if (!messageId) return false;
+        return !!await store.get(K.botMsg(messageId));
+      }
+      async function deleteContact(contactId) {
+        if (!contactId) return;
+        await Promise.all([
+          store.del(K.state(contactId)),
+          store.del(K.memory(contactId)),
+          store.del(K.lock(contactId)),
+          store.del(K.rate(contactId))
+        ]);
+      }
+      return {
+        STATES,
+        keys: K,
+        claimMessage,
+        isProcessed,
+        acquireLock,
+        releaseLock,
+        getState,
+        setHumanActive,
+        setBotActive,
+        isHumanActive,
+        getMemory,
+        pushMemory,
+        setMemory,
+        markBotMessage,
+        isBotMessage,
+        deleteContact
+      };
+    }
+    module2.exports = { createFarmerState, STATES, KEYS: K, TTL };
+  }
+});
+
+// lib/respondio/api.js
+var require_api = __commonJS({
+  "lib/respondio/api.js"(exports2, module2) {
+    "use strict";
+    var { fetchSafe: fetchSafe2 } = require_http();
+    var RespondioApiError = class extends Error {
+      constructor(message, status, body) {
+        super(message);
+        this.name = "RespondioApiError";
+        this.status = status || 0;
+        this.body = body;
+        this.permanent = status >= 400 && status < 500;
+      }
+    };
+    function createRespondioApi(opts = {}) {
+      const base = String(opts.baseUrl || "https://api.respond.io/v2").replace(/\/+$/, "");
+      const token = opts.token || "";
+      const log2 = opts.log;
+      async function call(method, path, body) {
+        if (!token) throw new RespondioApiError("respondio_api_token_missing", 401);
+        const url = base + path;
+        const res = await fetchSafe2(
+          url,
+          {
+            method,
+            headers: { authorization: "Bearer " + token, "content-type": "application/json", accept: "application/json" },
+            body: body != null ? JSON.stringify(body) : void 0
+          },
+          { timeoutMs: 12e3, retries: 0, log: log2 }
+        );
+        const status = res.status;
+        let json = null;
+        const txt = await res.text().catch(() => "");
+        try {
+          json = txt ? JSON.parse(txt) : null;
+        } catch {
+          json = { raw: txt };
+        }
+        if (status < 200 || status >= 300) {
+          const code = json && (json.code || json.error);
+          throw new RespondioApiError("respondio_api_" + status + (code ? ":" + code : ""), status, json);
+        }
+        return json;
+      }
+      return {
+        RespondioApiError,
+        /** Send a text message to a contact. */
+        sendTextMessage(contactId, text, channelId) {
+          const message = { type: "text", text: String(text || "") };
+          const payload = channelId ? { channelId: String(channelId), message } : { message };
+          return call("POST", `/contact/${encodeURIComponent(contactId)}/message`, payload);
+        },
+        /** List recent messages of a contact (for history sync). */
+        listMessages(contactId, { limit = 30, cursor } = {}) {
+          const qs = new URLSearchParams();
+          qs.set("limit", String(limit));
+          if (cursor) qs.set("cursorId", String(cursor));
+          return call("GET", `/contact/${encodeURIComponent(contactId)}/message?${qs.toString()}`);
+        },
+        /** Get a contact (tags, custom fields, assignee). */
+        getContact(contactId) {
+          return call("GET", `/contact/${encodeURIComponent(contactId)}`);
+        },
+        /** Assign the contact's conversation to a user and/or team. */
+        assign(contactId, { assignee, teamId } = {}) {
+          const payload = {};
+          if (assignee) payload.assignee = String(assignee);
+          if (teamId) payload.teamId = String(teamId);
+          return call("POST", `/contact/${encodeURIComponent(contactId)}/conversation/assignee`, payload);
+        },
+        addTag(contactId, tag) {
+          return call("POST", `/contact/${encodeURIComponent(contactId)}/tag`, { tags: [String(tag)] });
+        },
+        removeTag(contactId, tag) {
+          return call("DELETE", `/contact/${encodeURIComponent(contactId)}/tag`, { tags: [String(tag)] });
+        },
+        /** Post an internal comment (agent-only note). */
+        addComment(contactId, text) {
+          return call("POST", `/contact/${encodeURIComponent(contactId)}/comment`, { text: String(text || "") });
+        },
+        /** Close (mark done) the contact's open conversation. */
+        closeConversation(contactId, { category, summary } = {}) {
+          const payload = {};
+          if (category) payload.category = category;
+          if (summary) payload.summary = summary;
+          return call("POST", `/contact/${encodeURIComponent(contactId)}/conversation/close`, payload);
+        }
+      };
+    }
+    module2.exports = { createRespondioApi, RespondioApiError };
+  }
+});
+
+// lib/respondio/db.js
+var require_db = __commonJS({
+  "lib/respondio/db.js"(exports2, module2) {
+    "use strict";
+    function createFarmerDb(opts = {}) {
+      const url = opts.databaseUrl || "";
+      const log2 = opts.log || console;
+      let pool = null;
+      let disabled = !url;
+      function getPool() {
+        if (disabled) return null;
+        if (pool) return pool;
+        try {
+          const { Pool } = require("pg");
+          pool = new Pool({ connectionString: url, max: 4, ssl: /supabase|render|neon|amazonaws/.test(url) ? { rejectUnauthorized: false } : void 0 });
+          pool.on("error", (e) => (log2.error || log2.log).call(log2, "farmer_db_pool_error", e && e.message));
+        } catch (e) {
+          disabled = true;
+          (log2.warn || log2.log).call(log2, "farmer_db_disabled_no_pg", { err: String(e && e.message) });
+          return null;
+        }
+        return pool;
+      }
+      async function q(text, params) {
+        const p = getPool();
+        if (!p) return { rows: [], rowCount: 0, skipped: true };
+        try {
+          return await p.query(text, params);
+        } catch (e) {
+          (log2.error || log2.log).call(log2, "farmer_db_query_error", { err: String(e && e.message) });
+          return { rows: [], rowCount: 0, error: String(e && e.message) };
+        }
+      }
+      return {
+        get enabled() {
+          return !disabled;
+        },
+        async recordWebhookEvent({ eventId, eventType, messageId, status }) {
+          return q(
+            `INSERT INTO webhook_events (event_id, event_type, message_id, status, attempts)
+         VALUES ($1,$2,$3,$4,1)
+         ON CONFLICT (event_id) DO UPDATE SET attempts = webhook_events.attempts + 1, status = EXCLUDED.status`,
+            [eventId, eventType || null, messageId || null, status || "received"]
+          );
+        },
+        async markWebhookProcessed(eventId, status, errorCode) {
+          return q(
+            `UPDATE webhook_events SET status=$2, processed_at=now(), error_code=$3 WHERE event_id=$1`,
+            [eventId, status || "processed", errorCode || null]
+          );
+        },
+        async upsertContact({ contactId, language, farmerCode, farmName, emirate }) {
+          return q(
+            `INSERT INTO farmer_contacts (respondio_contact_id, preferred_language, farmer_code, farm_name, emirate)
+         VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (respondio_contact_id) DO UPDATE SET
+           preferred_language = COALESCE(EXCLUDED.preferred_language, farmer_contacts.preferred_language),
+           farmer_code = COALESCE(EXCLUDED.farmer_code, farmer_contacts.farmer_code),
+           farm_name = COALESCE(EXCLUDED.farm_name, farmer_contacts.farm_name),
+           emirate = COALESCE(EXCLUDED.emirate, farmer_contacts.emirate),
+           updated_at = now()`,
+            [contactId, language || null, farmerCode || null, farmName || null, emirate || null]
+          );
+        },
+        async upsertConversation(c) {
+          return q(
+            `INSERT INTO farmer_conversations
+           (respondio_contact_id, respondio_conversation_id, channel_id, state, assigned_user_id, assigned_team_id, last_incoming_at, last_outgoing_at, last_human_message_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, now())
+         ON CONFLICT (respondio_contact_id) DO UPDATE SET
+           respondio_conversation_id = COALESCE(EXCLUDED.respondio_conversation_id, farmer_conversations.respondio_conversation_id),
+           channel_id = COALESCE(EXCLUDED.channel_id, farmer_conversations.channel_id),
+           state = COALESCE(EXCLUDED.state, farmer_conversations.state),
+           assigned_user_id = COALESCE(EXCLUDED.assigned_user_id, farmer_conversations.assigned_user_id),
+           assigned_team_id = COALESCE(EXCLUDED.assigned_team_id, farmer_conversations.assigned_team_id),
+           last_incoming_at = COALESCE(EXCLUDED.last_incoming_at, farmer_conversations.last_incoming_at),
+           last_outgoing_at = COALESCE(EXCLUDED.last_outgoing_at, farmer_conversations.last_outgoing_at),
+           last_human_message_at = COALESCE(EXCLUDED.last_human_message_at, farmer_conversations.last_human_message_at),
+           updated_at = now()`,
+            [
+              c.contactId,
+              c.conversationId || null,
+              c.channelId || null,
+              c.state || null,
+              c.assignedUserId || null,
+              c.assignedTeamId || null,
+              c.lastIncomingAt || null,
+              c.lastOutgoingAt || null,
+              c.lastHumanMessageAt || null
+            ]
+          );
+        },
+        async setConversationState(contactId, state) {
+          return q(`UPDATE farmer_conversations SET state=$2, updated_at=now() WHERE respondio_contact_id=$1`, [contactId, state]);
+        },
+        /** Insert a message; ON CONFLICT DO NOTHING guarantees idempotency (dedup). */
+        async insertMessage(m) {
+          return q(
+            `INSERT INTO farmer_messages (respondio_message_id, respondio_contact_id, direction, sender_type, message_type, text, media_url)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (respondio_message_id) DO NOTHING`,
+            [m.messageId, m.contactId, m.direction, m.senderType || null, m.messageType || "text", m.text || null, m.mediaUrl || null]
+          );
+        },
+        async recentMessages(contactId, limit = 30) {
+          const r = await q(
+            `SELECT direction, sender_type, text, created_at FROM farmer_messages
+         WHERE respondio_contact_id=$1 ORDER BY created_at DESC LIMIT $2`,
+            [contactId, limit]
+          );
+          return (r.rows || []).reverse();
+        },
+        async upsertSummary(s) {
+          return q(
+            `INSERT INTO farmer_conversation_summaries (respondio_contact_id, conversation_id, summary, extracted_farmer_facts_json, last_message_id, updated_at)
+         VALUES ($1,$2,$3,$4,$5, now())
+         ON CONFLICT (respondio_contact_id) DO UPDATE SET
+           conversation_id = COALESCE(EXCLUDED.conversation_id, farmer_conversation_summaries.conversation_id),
+           summary = COALESCE(EXCLUDED.summary, farmer_conversation_summaries.summary),
+           extracted_farmer_facts_json = EXCLUDED.extracted_farmer_facts_json,
+           last_message_id = EXCLUDED.last_message_id,
+           updated_at = now()`,
+            [s.contactId, s.conversationId || null, s.summary || null, JSON.stringify(s.facts || {}), s.lastMessageId || null]
+          );
+        },
+        async getSummary(contactId) {
+          const r = await q(`SELECT summary, extracted_farmer_facts_json FROM farmer_conversation_summaries WHERE respondio_contact_id=$1`, [contactId]);
+          return r.rows && r.rows[0] ? r.rows[0] : null;
+        },
+        async insertServiceRequest(s) {
+          return q(
+            `INSERT INTO farmer_service_requests (respondio_contact_id, conversation_id, request_type, request_details_json, status, assigned_user_id)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+            [s.contactId, s.conversationId || null, s.requestType || null, JSON.stringify(s.details || {}), s.status || "new", s.assignedUserId || null]
+          );
+        },
+        /** GDPR-style delete of all farmer data for a contact. */
+        async deleteContactData(contactId) {
+          await q(`DELETE FROM farmer_messages WHERE respondio_contact_id=$1`, [contactId]);
+          await q(`DELETE FROM farmer_conversation_summaries WHERE respondio_contact_id=$1`, [contactId]);
+          await q(`DELETE FROM farmer_service_requests WHERE respondio_contact_id=$1`, [contactId]);
+          await q(`DELETE FROM farmer_conversations WHERE respondio_contact_id=$1`, [contactId]);
+          await q(`DELETE FROM farmer_contacts WHERE respondio_contact_id=$1`, [contactId]);
+          return { ok: true };
+        }
+      };
+    }
+    module2.exports = { createFarmerDb };
+  }
+});
+
+// lib/respondio/facts.js
+var require_facts = __commonJS({
+  "lib/respondio/facts.js"(exports2, module2) {
+    "use strict";
+    var AR_DIGITS = { "\u0660": "0", "\u0661": "1", "\u0662": "2", "\u0663": "3", "\u0664": "4", "\u0665": "5", "\u0666": "6", "\u0667": "7", "\u0668": "8", "\u0669": "9" };
+    function normDigits(s) {
+      return String(s || "").replace(/[٠-٩]/g, (d) => AR_DIGITS[d] || d);
+    }
+    var EMIRATES = [
+      ["\u0623\u0628\u0648\u0638\u0628\u064A", "Abu Dhabi"],
+      ["\u0627\u0628\u0648\u0638\u0628\u064A", "Abu Dhabi"],
+      ["\u0627\u0644\u0639\u064A\u0646", "Al Ain"],
+      ["\u062F\u0628\u064A", "Dubai"],
+      ["\u0627\u0644\u0634\u0627\u0631\u0642\u0629", "Sharjah"],
+      ["\u0639\u062C\u0645\u0627\u0646", "Ajman"],
+      ["\u0627\u0644\u0641\u062C\u064A\u0631\u0629", "Fujairah"],
+      ["\u0631\u0623\u0633 \u0627\u0644\u062E\u064A\u0645\u0629", "Ras Al Khaimah"],
+      ["\u0631\u0627\u0633 \u0627\u0644\u062E\u064A\u0645\u0629", "Ras Al Khaimah"],
+      ["\u0623\u0645 \u0627\u0644\u0642\u064A\u0648\u064A\u0646", "Umm Al Quwain"],
+      ["\u0627\u0644\u0638\u0641\u0631\u0629", "Al Dhafra"],
+      ["\u0644\u064A\u0648\u0627", "Liwa"],
+      ["\u0627\u0644\u0645\u0632\u064A\u0631\u0639\u0629", "Al Mizairaa"]
+    ];
+    var DATE_TYPES = ["\u0645\u062C\u062F\u0648\u0644", "\u062E\u0644\u0627\u0635", "\u0628\u0631\u062D\u064A", "\u062E\u0636\u0631\u064A", "\u0635\u0642\u0639\u064A", "\u0644\u0648\u0644\u0648", "\u062F\u0628\u0627\u0633", "\u0634\u064A\u0634\u064A", "\u0641\u0631\u0636", "\u0646\u0628\u062A\u0629", "\u0631\u0637\u0628"];
+    function extractFarmerFacts(text) {
+      const t = normDigits(String(text || ""));
+      const facts = {};
+      for (const [ar, en] of EMIRATES) {
+        if (t.includes(ar)) {
+          facts.emirate = en;
+          break;
+        }
+      }
+      for (const d of DATE_TYPES) {
+        if (t.includes(d)) {
+          facts.date_type = d;
+          break;
+        }
+      }
+      const qty = t.match(/(\d{1,6})\s*(صندوق|صناديق|كرتون|كراتين|كيلو|كجم|طن|صينية|صواني)/);
+      if (qty) facts.quantity = { value: Number(qty[1]), unit: qty[2] };
+      if (/تعبئ|تغليف|فاكيوم|فاكييوم|vacuum|عبّ[يى]|عبي/i.test(t)) facts.service = "packing";
+      else if (/تصنيع|عجين|معجون|manufactur/i.test(t)) facts.service = "manufacturing";
+      else if (/استلام|نستلم|أستلم|pickup|collect/i.test(t)) facts.service = "pickup";
+      else if (/تخزين|صندوق|كرتون|صينية|تجفيف|مستلزم/i.test(t)) facts.service = "supplies";
+      if (/فاكيوم|vacuum|مفرّغ|مفرغ/i.test(t)) facts.packing_type = "vacuum";
+      const when = t.match(/(بعد|خلال)\s*(\d{1,2})\s*(يوم|ايام|أيام|اسبوع|أسبوع|اسابيع|أسابيع)/);
+      if (when) facts.pickup_when = when[0];
+      if (/السبت|الأحد|الاحد|الاثنين|الإثنين|الثلاثاء|الأربعاء|الاربعاء|الخميس|الجمعة/.test(t)) {
+        const day = t.match(/السبت|الأحد|الاحد|الاثنين|الإثنين|الثلاثاء|الأربعاء|الاربعاء|الخميس|الجمعة/);
+        if (day) facts.pickup_day = day[0];
+      }
+      if (/مشكل|تلف|تعفن|جودة سيئ|رديء|سيء|reject|damage|quality/i.test(t)) facts.quality_issue = true;
+      const phone = t.match(/(?:\+?971|0)\d{8,9}/);
+      if (phone) facts.phone = phone[0];
+      const name = t.match(/(?:اسمي|انا اسمي|أنا اسمي|my name is)\s+([\p{L}\s]{2,40})/iu);
+      if (name) facts.name = name[1].trim().split(/\s+/).slice(0, 4).join(" ");
+      return facts;
+    }
+    function mergeFacts(prev = {}, next = {}) {
+      const out = { ...prev || {} };
+      for (const k of Object.keys(next || {})) {
+        const v = next[k];
+        if (v != null && v !== "" && !(typeof v === "object" && !Array.isArray(v) && Object.keys(v).length === 0)) out[k] = v;
+      }
+      return out;
+    }
+    module2.exports = { extractFarmerFacts, mergeFacts, normDigits };
+  }
+});
+
+// lib/queue.js
+var require_queue = __commonJS({
+  "lib/queue.js"(exports2, module2) {
+    "use strict";
+    var { fetchSafe: fetchSafe2 } = require_http();
+    function createQueue(opts = {}) {
+      const enabled = !!(opts.qstashToken && opts.qstashUrl && opts.workerUrl);
+      const log2 = opts.log || console;
+      async function enqueue(job) {
+        if (enabled) {
+          const url = opts.qstashUrl.replace(/\/$/, "") + "/v2/publish/" + encodeURIComponent(opts.workerUrl);
+          await fetchSafe2(
+            url,
+            {
+              method: "POST",
+              headers: {
+                authorization: "Bearer " + opts.qstashToken,
+                "content-type": "application/json"
+              },
+              body: JSON.stringify(job)
+            },
+            { timeoutMs: 8e3, retries: 2, log: log2 }
+          );
+          return { mode: "qstash" };
+        }
+        if (opts.directHandler) {
+          await opts.directHandler(job);
+          return { mode: "direct" };
+        }
+        (log2.warn || log2.log).call(log2, JSON.stringify({ msg: "queue_no_handler_configured" }));
+        return { mode: "noop" };
+      }
+      return { enqueue, enabled };
+    }
+    module2.exports = { createQueue };
+  }
+});
+
+// lib/respondio/router.js
+var require_router = __commonJS({
+  "lib/respondio/router.js"(exports2, module2) {
+    "use strict";
+    var express2 = require("express");
+    var { isFarmerConversation } = require_filter();
+    var { verifyRespondioSignature, parseIncomingEvent } = require_webhook();
+    var { verifyQstashSignature } = require_qstash();
+    var { createFarmerState } = require_state();
+    var { createRespondioApi } = require_api();
+    var { createFarmerDb } = require_db();
+    var { extractFarmerFacts, mergeFacts } = require_facts();
+    var { createQueue } = require_queue();
+    var { createRateLimiter: createRateLimiter2, DEFAULT_LIMITS: DEFAULT_LIMITS2 } = require_ratelimit();
+    function rawOf(req) {
+      if (req.rawBody != null) return req.rawBody;
+      if (Buffer.isBuffer(req.body)) return req.body;
+      if (req.body && typeof req.body === "object") return Buffer.from(JSON.stringify(req.body));
+      return Buffer.from("");
+    }
+    function parseBody(req) {
+      if (req.body && typeof req.body === "object" && !Buffer.isBuffer(req.body)) return req.body;
+      try {
+        return req.body && req.body.length ? JSON.parse(req.body.toString("utf8")) : {};
+      } catch {
+        return {};
+      }
+    }
+    function createFarmerRouter(deps = {}) {
+      const cfg = deps.cfg;
+      const store = deps.store;
+      const log2 = deps.log || console;
+      const askAI2 = deps.askAI;
+      if (typeof askAI2 !== "function") throw new Error("createFarmerRouter requires askAI");
+      const fstate = deps.state || createFarmerState(store, { log: log2, historyLimit: cfg.historyLimit });
+      const api = deps.api || createRespondioApi({ baseUrl: cfg.apiBaseUrl, token: cfg.apiToken, log: log2 });
+      const db = deps.db || createFarmerDb({ databaseUrl: cfg.databaseUrl, log: log2 });
+      const rl = deps.rateLimiter || createRateLimiter2(store);
+      const workerUrl = deps.workerUrl || "";
+      const queue = createQueue({
+        qstashUrl: cfg.qstashUrl,
+        qstashToken: cfg.qstashToken,
+        workerUrl,
+        log: log2,
+        directHandler: (job) => processMessage(job).catch((e) => (log2.error || log2.log).call(log2, "farmer_direct_handler_error", { err: String(e && e.message) }))
+      });
+      const router = express2.Router();
+      router.post("/webhooks/respondio/farmers", async (req, res) => {
+        if (!cfg.enabled) return res.status(200).json({ ignored: "disabled" });
+        const sig = req.get("x-webhook-signature") || req.get("x-respond-signature");
+        if (cfg.webhookSecret && !verifyRespondioSignature(rawOf(req), sig, cfg.webhookSecret)) {
+          log2.warn && log2.warn("farmer_webhook_bad_signature");
+          return res.status(401).json({ error: "invalid_signature" });
+        }
+        const body = parseBody(req);
+        const ev = parseIncomingEvent(body);
+        const eventId = String(body && (body.event_id || body.id) || ev.messageId || Date.now());
+        if (!ev.isIncomingMessage || ev.senderType !== "contact") {
+          db.recordWebhookEvent({ eventId, eventType: ev.eventType, messageId: ev.messageId, status: "ignored" });
+          return res.status(200).json({ ignored: "not_incoming_contact_message" });
+        }
+        if (ev.messageId) {
+          const claimed = await fstate.claimMessage(ev.messageId).catch(() => true);
+          if (!claimed) return res.status(200).json({ ignored: "duplicate" });
+        }
+        const ctx = {
+          channelId: ev.channelId,
+          tags: ev.tags,
+          contactFields: ev.contactFields,
+          assignedTeamId: ev.assignedTeamId,
+          teamIds: []
+        };
+        const decision = isFarmerConversation(ctx, cfg);
+        db.recordWebhookEvent({ eventId, eventType: ev.eventType, messageId: ev.messageId, status: decision.isFarmer ? "queued" : "ignored" });
+        if (!decision.isFarmer && decision.reason !== "no_criteria_configured") {
+          return res.status(200).json({ ignored: "not_farmer", reason: decision.reason });
+        }
+        const job = {
+          kind: "farmer_incoming",
+          eventId,
+          messageId: ev.messageId,
+          contactId: ev.contactId,
+          conversationId: ev.conversationId,
+          channelId: ev.channelId,
+          text: ev.text,
+          needsFarmerRecheck: decision.reason === "no_criteria_configured",
+          at: Date.now()
+        };
+        try {
+          await queue.enqueue(job);
+        } catch (e) {
+          log2.error && log2.error("farmer_enqueue_failed", { err: String(e && e.message) });
+        }
+        return res.status(200).json({ ok: true, queued: true });
+      });
+      router.post("/api/jobs/respondio/farmers/message", async (req, res) => {
+        const sig = req.get("upstash-signature");
+        if (cfg.qstashCurrentSigningKey || cfg.qstashNextSigningKey) {
+          const ok = verifyQstashSignature(sig, rawOf(req), { currentKey: cfg.qstashCurrentSigningKey, nextKey: cfg.qstashNextSigningKey });
+          if (!ok) return res.status(401).json({ error: "invalid_qstash_signature" });
+        }
+        const job = parseBody(req);
+        try {
+          const result = await processMessage(job);
+          return res.status(200).json(result);
+        } catch (e) {
+          const permanent = e && e.permanent;
+          db.markWebhookProcessed(job.eventId, "failed", String(e && e.message).slice(0, 80));
+          if (permanent) return res.status(200).json({ dropped: true, reason: String(e && e.message) });
+          return res.status(500).json({ error: String(e && e.message) });
+        }
+      });
+      router.post("/api/admin/respondio/farmers/:contactId/release", async (req, res) => {
+        const body = parseBody(req);
+        const key = req.get("x-admin-key") || body && body.adminKey;
+        if (!cfg.adminKey || key !== cfg.adminKey) return res.status(401).json({ error: "unauthorized" });
+        const contactId = String(req.params.contactId || "");
+        if (!contactId) return res.status(400).json({ error: "contactId_required" });
+        await fstate.setBotActive(contactId, { reason: "admin_release" });
+        await db.setConversationState(contactId, "BOT_ACTIVE");
+        try {
+          await api.removeTag(contactId, "AI_PAUSED");
+        } catch (_) {
+        }
+        return res.status(200).json({ ok: true, contactId, state: "BOT_ACTIVE" });
+      });
+      async function processMessage(job) {
+        const contactId = job.contactId;
+        if (!contactId) return { skipped: "no_contact" };
+        const lockToken = job.messageId || String(Date.now());
+        const locked = await fstate.acquireLock(contactId, lockToken).catch((e) => {
+          if (cfg.humanTakeoverFailClosed) throw e;
+          return true;
+        });
+        if (!locked) {
+          const err = new Error("contact_locked");
+          err.permanent = false;
+          throw err;
+        }
+        try {
+          const rlres = await rl.check("respondio:farmer:" + contactId, DEFAULT_LIMITS2.webhookSenderPerMin, 60);
+          if (!rlres.allowed) return { skipped: "rate_limited" };
+          if (job.needsFarmerRecheck && cfg.apiToken) {
+            try {
+              const c = await api.getContact(contactId);
+              const contact = c && (c.data || c) || {};
+              const tags = (contact.tags || []).map((t) => typeof t === "string" ? t : t.name || "").filter(Boolean);
+              const cf = {};
+              const cfr = contact.custom_fields || contact.customFields || [];
+              if (Array.isArray(cfr)) for (const f of cfr) {
+                if (f && f.name != null) cf[f.name] = f.value;
+              }
+              const dec = isFarmerConversation({ channelId: job.channelId, tags, contactFields: cf, assignedTeamId: contact.assignedTeamId }, cfg);
+              if (!dec.isFarmer) return { skipped: "not_farmer_on_recheck" };
+            } catch (e) {
+              if (cfg.humanTakeoverFailClosed) {
+                const er = new Error("recheck_failed");
+                er.permanent = false;
+                throw er;
+              }
+            }
+          }
+          db.insertMessage({ messageId: job.messageId, contactId, direction: "incoming", senderType: "contact", text: job.text });
+          db.upsertConversation({ contactId, conversationId: job.conversationId, channelId: job.channelId, lastIncomingAt: (/* @__PURE__ */ new Date()).toISOString() });
+          if (cfg.humanTakeoverEnabled) {
+            let humanActive;
+            try {
+              humanActive = await fstate.isHumanActive(contactId);
+            } catch (e) {
+              if (cfg.humanTakeoverFailClosed) return { silent: "store_error_fail_closed" };
+              humanActive = false;
+            }
+            if (humanActive) {
+              log2.info && log2.info("farmer_silent_human_active", {});
+              return { silent: "human_active" };
+            }
+          }
+          const convId = "respondio:" + contactId;
+          const reply = await askAI2(String(job.text || ""), "whatsapp", convId, cfg.mode);
+          let replyText = reply && reply.text && String(reply.text).trim() ? reply.text : "\u0645\u0639\u0644\u0634\u060C \u0645\u0645\u0643\u0646 \u062A\u0648\u0636\u0651\u062D \u0637\u0644\u0628\u0643 \u0623\u0643\u062A\u0631 \u0639\u0634\u0627\u0646 \u0623\u0642\u062F\u0631 \u0623\u0633\u0627\u0639\u062F\u0643\u061F";
+          const facts = mergeFacts((await db.getSummary(contactId) || {}).extracted_farmer_facts_json, extractFarmerFacts(job.text));
+          db.upsertSummary({ contactId, conversationId: job.conversationId, facts, lastMessageId: job.messageId });
+          if (cfg.humanTakeoverEnabled) {
+            try {
+              if (await fstate.isHumanActive(contactId)) {
+                log2.info && log2.info("farmer_reply_cancelled_human_took_over", {});
+                return { silent: "human_took_over_mid_flight" };
+              }
+            } catch (e) {
+              if (cfg.humanTakeoverFailClosed) return { silent: "store_error_fail_closed_presend" };
+            }
+          }
+          const sent = await api.sendTextMessage(contactId, replyText, job.channelId);
+          const botMsgId = sent && (sent.messageId || sent.data && sent.data.messageId || sent.message && sent.message.messageId);
+          if (botMsgId) await fstate.markBotMessage(String(botMsgId));
+          db.insertMessage({ messageId: botMsgId || "bot-" + (job.messageId || Date.now()), contactId, direction: "outgoing", senderType: "bot", text: replyText });
+          db.upsertConversation({ contactId, lastOutgoingAt: (/* @__PURE__ */ new Date()).toISOString() });
+          if (reply && reply.handoff) {
+            await doHandoff(contactId, job, facts, reply);
+          }
+          db.markWebhookProcessed(job.eventId, "processed", null);
+          return { ok: true, sent: !!botMsgId, handoff: !!(reply && reply.handoff) };
+        } finally {
+          await fstate.releaseLock(contactId).catch(() => {
+          });
+        }
+      }
+      async function doHandoff(contactId, job, facts, reply) {
+        await fstate.setHumanActive(contactId, { reason: "bot_handoff" }).catch(() => {
+        });
+        await db.setConversationState(contactId, "HUMAN_ACTIVE").catch(() => {
+        });
+        try {
+          await api.addTag(contactId, "AI_PAUSED");
+        } catch (_) {
+        }
+        try {
+          if (cfg.defaultAssigneeId || cfg.defaultTeamId) await api.assign(contactId, { assignee: cfg.defaultAssigneeId, teamId: cfg.defaultTeamId });
+        } catch (_) {
+        }
+        const factLines = Object.entries(facts || {}).map(([k, v]) => `- ${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`).join("\n");
+        const comment = `\u{1F91D} \u062A\u062D\u0648\u064A\u0644 \u0645\u0646 \u0628\u0648\u062A \u0627\u0644\u0645\u0632\u0627\u0631\u0639\u064A\u0646
+\u0622\u062E\u0631 \u0631\u0633\u0627\u0644\u0629: ${String(job.text || "").slice(0, 300)}
+` + (facts && facts.service ? `\u0646\u0648\u0639 \u0627\u0644\u062E\u062F\u0645\u0629: ${facts.service}
+` : "") + "\u0645\u0639\u0644\u0648\u0645\u0627\u062A \u062C\u064F\u0645\u0639\u062A:\n" + (factLines || "- (\u0644\u0627 \u064A\u0648\u062C\u062F)") + "\n\u0627\u0644\u0633\u0628\u0628: \u0627\u0644\u0645\u0632\u0627\u0631\u0639 \u0637\u0644\u0628 \u0645\u0648\u0638\u0641 \u0623\u0648 \u0645\u0639\u0644\u0648\u0645\u0629 \u063A\u064A\u0631 \u0645\u062A\u0648\u0641\u0631\u0629 \u0641\u064A \u0642\u0627\u0639\u062F\u0629 \u0645\u0639\u0631\u0641\u0629 \u0627\u0644\u0645\u0632\u0627\u0631\u0639\u064A\u0646.";
+        try {
+          await api.addComment(contactId, comment);
+        } catch (_) {
+        }
+        if (facts && facts.service) {
+          db.insertServiceRequest({ contactId, conversationId: job.conversationId, requestType: facts.service, details: facts, status: "handoff" });
+        }
+      }
+      return { router, processMessage, _internals: { fstate, api, db } };
+    }
+    module2.exports = { createFarmerRouter };
+  }
+});
+
 // webhook-server.js
 var express = require("express");
 var crypto = require("crypto");
@@ -4013,6 +4996,21 @@ app.get("/refresh", async (req, res) => {
     "\u062A\u0645 \u0627\u0644\u062A\u062D\u062F\u064A\u062B \u2714 | \u0623\u0633\u0639\u0627\u0631 \u0627\u0644\u0641\u064A\u062F: " + Object.keys(feedPrices).length + " | \u0622\u062E\u0631 \u062A\u062D\u062F\u064A\u062B: " + (liveCatalogUpdatedAt ? liveCatalogUpdatedAt.toISOString() : "-")
   );
 });
+try {
+  const { resolveFarmerConfig } = require_config2();
+  const { createFarmerRouter } = require_router();
+  const farmerCfg = resolveFarmerConfig(process.env);
+  if (farmerCfg.enabled) {
+    const publicBase = (process.env.PUBLIC_BASE_URL || (process.env.VERCEL_URL ? "https://" + process.env.VERCEL_URL : "")).replace(/\/+$/, "");
+    const workerUrl = process.env.RESPONDIO_WORKER_URL || (publicBase ? publicBase + "/api/jobs/respondio/farmers/message" : "");
+    const { router } = createFarmerRouter({ cfg: farmerCfg, store: kvStore, log, askAI, workerUrl });
+    app.use(router);
+    log.info("respondio_farmer_router_mounted", { qstash: !!(farmerCfg.qstashToken && workerUrl), db: !!farmerCfg.databaseUrl });
+  }
+} catch (e) {
+  (log.error || console.error).call(log, "respondio_farmer_router_mount_failed", { err: String(e && e.message) });
+}
+var FARMER_CHANNEL_OWNER = (process.env.FARMER_CHANNEL_OWNER || "respondio").toLowerCase();
 var PORT = process.env.PORT || 3e3;
 if (require.main === module) {
   app.listen(PORT, () => console.log(`Liwa Dates bot running on port ${PORT}`));

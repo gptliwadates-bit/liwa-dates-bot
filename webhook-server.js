@@ -3911,8 +3911,17 @@ app.post("/respondio/reply", async (req, res) => {
     const rl = await rateLimiter.check("respondio:" + contactId, DEFAULT_LIMITS.apiChatPerMin, 60);
     if (!rl.allowed) return res.status(429).json({ reply: "\u0637\u0644\u0628\u0627\u062A \u0643\u062A\u064A\u0631 \u0628\u0633\u0631\u0639\u0629 \u2014 \u0627\u0646\u062A\u0638\u0631 \u0644\u062D\u0638\u0629 \u0648\u062C\u0631\u0651\u0628 \u062A\u0627\u0646\u064A.", handoff: false, order: null });
     const reply = await askAI(String(message), "whatsapp", "respondio:" + contactId, mode);
-    const replyText = reply.text && String(reply.text).trim() ? reply.text : "\u0645\u0639\u0644\u0634\u060C \u0645\u0645\u0643\u0646 \u062A\u0648\u0636\u0651\u062D \u0637\u0644\u0628\u0643 \u0623\u0643\u062A\u0631 \u0639\u0634\u0627\u0646 \u0623\u0642\u062F\u0631 \u0623\u0633\u0627\u0639\u062F\u0643\u061F";
-    res.json({ reply: replyText, handoff: !!reply.handoff, order: reply.order || null });
+    let replyText = reply.text && String(reply.text).trim() ? reply.text : "\u0645\u0639\u0644\u0634\u060C \u0645\u0645\u0643\u0646 \u062A\u0648\u0636\u0651\u062D \u0637\u0644\u0628\u0643 \u0623\u0643\u062A\u0631 \u0639\u0634\u0627\u0646 \u0623\u0642\u062F\u0631 \u0623\u0633\u0627\u0639\u062F\u0643\u061F";
+    const single = reply.product || (Array.isArray(reply.products) && reply.products.length === 1 ? reply.products[0] : null);
+    const image = single && single.imageUrl ? String(single.imageUrl) : "";
+    const link = single && single.url ? String(single.url) : "";
+    if (link && !replyText.includes(link)) replyText += "\n\n\u{1F517} " + link;
+    if (Array.isArray(reply.products) && reply.products.length > 1) {
+      for (const p of reply.products) {
+        if (p && p.url && !replyText.includes(p.url)) replyText += "\n\u{1F517} " + (p.title ? p.title + ": " : "") + p.url;
+      }
+    }
+    res.json({ reply: replyText, handoff: !!reply.handoff, order: reply.order || null, image, link });
   } catch (e) {
     console.error("/respondio/reply error:", e);
     res.json({ reply: "\u0645\u0639\u0644\u0634 \u062D\u0635\u0644 \u062E\u0637\u0623 \u0628\u0633\u064A\u0637\u060C \u0645\u0645\u0643\u0646 \u062A\u0628\u0639\u062A \u062A\u0627\u0646\u064A\u061F", handoff: false, order: null });

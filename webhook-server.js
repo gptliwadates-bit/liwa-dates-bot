@@ -3903,12 +3903,16 @@ app.post("/respondio/reply", async (req, res) => {
     const b = req.body || {};
     const message = b.message || b.text || b.contact && b.contact.last_message && b.contact.last_message.message && b.contact.last_message.message.text || "";
     const contactId = String(b.contactId || b.contact_id || b.contact && b.contact.id || b.id || req.ip || "anon");
-    if (!message) return res.json({ reply: "", handoff: false, order: null });
+    const mode = b.mode === "retail" ? null : "farmer";
+    if (!message) {
+      const greet = mode === "farmer" ? "\u0647\u0644\u0627 \u0648\u0627\u0644\u0644\u0647! \u0645\u0639\u0643 \u0639\u0628\u064A\u062F \u0645\u0633\u0627\u0639\u062F \u0645\u0635\u0646\u0639 \u062A\u0645\u0648\u0631 \u0644\u064A\u0648\u0627 \u0644\u062E\u062F\u0645\u0627\u062A \u0627\u0644\u0645\u0632\u0627\u0631\u0639\u064A\u0646 \u{1F334} \u0643\u064A\u0641 \u0623\u0642\u062F\u0631 \u0623\u0633\u0627\u0639\u062F\u0643\u061F \u0639\u0646\u062F\u0646\u0627 \u0645\u0633\u062A\u0644\u0632\u0645\u0627\u062A \u062A\u0639\u0628\u0626\u0629 (\u0635\u0646\u0627\u062F\u064A\u0642 \u062A\u062E\u0632\u064A\u0646\u060C \u0643\u0631\u0627\u062A\u064A\u0646\u060C \u0635\u0648\u0627\u0646\u064A \u062A\u062C\u0641\u064A\u0641) \u0648\u062E\u062F\u0645\u0627\u062A \u062A\u0639\u0628\u0626\u0629 \u0648\u062A\u0635\u0646\u064A\u0639 \u0644\u0645\u062D\u0635\u0648\u0644\u0643." : "\u0647\u0644\u0627 \u0648\u0627\u0644\u0644\u0647! \u0646\u0648\u0651\u0631\u062A \u062A\u0645\u0648\u0631 \u0644\u064A\u0648\u0627 \u{1F334} \u0643\u064A\u0641 \u0623\u0642\u062F\u0631 \u0623\u0633\u0627\u0639\u062F\u0643\u061F";
+      return res.json({ reply: greet, handoff: false, order: null });
+    }
     const rl = await rateLimiter.check("respondio:" + contactId, DEFAULT_LIMITS.apiChatPerMin, 60);
     if (!rl.allowed) return res.status(429).json({ reply: "\u0637\u0644\u0628\u0627\u062A \u0643\u062A\u064A\u0631 \u0628\u0633\u0631\u0639\u0629 \u2014 \u0627\u0646\u062A\u0638\u0631 \u0644\u062D\u0638\u0629 \u0648\u062C\u0631\u0651\u0628 \u062A\u0627\u0646\u064A.", handoff: false, order: null });
-    const mode = b.mode === "retail" ? null : "farmer";
     const reply = await askAI(String(message), "whatsapp", "respondio:" + contactId, mode);
-    res.json({ reply: reply.text || "", handoff: !!reply.handoff, order: reply.order || null });
+    const replyText = reply.text && String(reply.text).trim() ? reply.text : "\u0645\u0639\u0644\u0634\u060C \u0645\u0645\u0643\u0646 \u062A\u0648\u0636\u0651\u062D \u0637\u0644\u0628\u0643 \u0623\u0643\u062A\u0631 \u0639\u0634\u0627\u0646 \u0623\u0642\u062F\u0631 \u0623\u0633\u0627\u0639\u062F\u0643\u061F";
+    res.json({ reply: replyText, handoff: !!reply.handoff, order: reply.order || null });
   } catch (e) {
     console.error("/respondio/reply error:", e);
     res.json({ reply: "\u0645\u0639\u0644\u0634 \u062D\u0635\u0644 \u062E\u0637\u0623 \u0628\u0633\u064A\u0637\u060C \u0645\u0645\u0643\u0646 \u062A\u0628\u0639\u062A \u062A\u0627\u0646\u064A\u061F", handoff: false, order: null });

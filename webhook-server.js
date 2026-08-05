@@ -1749,6 +1749,11 @@ var require_config2 = __commonJS({
         contactValue: env.RESPONDIO_FARMER_CONTACT_VALUE || "farmer",
         matchMode,
         // 'any' | 'all'
+        // For a workspace that is ENTIRELY farmers (e.g. a dedicated "Farmer Services"
+        // workspace), set RESPONDIO_FARMER_MATCH_ALL=true to treat every conversation
+        // as a farmer without enumerating channels/tags. The farmer bot still refuses
+        // any retail question, so this is safe even if a non-farmer messages.
+        matchAll: _bool(env.RESPONDIO_FARMER_MATCH_ALL, false),
         // Routing for handoff
         defaultAssigneeId: env.RESPONDIO_FARMER_DEFAULT_ASSIGNEE_ID || "",
         defaultTeamId: env.RESPONDIO_FARMER_DEFAULT_TEAM_ID || "",
@@ -1793,6 +1798,7 @@ var require_filter = __commonJS({
       return String(v == null ? "" : v).trim().toLowerCase();
     }
     function isFarmerConversation(ctx = {}, cfg = {}) {
+      if (cfg.matchAll) return { isFarmer: true, reason: "match_all_workspace", matched: ["all"], checked: ["all"] };
       const crit = enabledCriteria(cfg);
       const checks = [];
       if (crit.channel) {

@@ -2594,6 +2594,7 @@ var require_router = __commonJS({
           eventType: ev.eventType,
           isIncoming: ev.isIncomingMessage,
           senderType: ev.senderType,
+          messageId: ev.messageId,
           contactId: ev.contactId,
           channelId: ev.channelId,
           textLen: (ev.text || "").length
@@ -2746,7 +2747,8 @@ var require_router = __commonJS({
           const sent = await api.sendTextMessage(contactId, outText, job.channelId);
           const botMsgId = sent && (sent.messageId || sent.data && sent.data.messageId || sent.message && sent.message.messageId);
           log2.info && log2.info("farmer_sent_ok", { contactId: String(contactId), botMsgId: botMsgId ? String(botMsgId) : null });
-          for (const c of cards) {
+          const MAX_IMAGES = 3;
+          for (const c of cards.slice(0, MAX_IMAGES)) {
             if (!c.imageUrl) continue;
             try {
               await api.sendImageMessage(contactId, c.imageUrl, job.channelId);
@@ -3780,7 +3782,8 @@ function parseReply(raw, source, mode) {
   let entries = autoProductEntries(text, images);
   if (mode === "farmer") {
     entries = entries.filter((e) => SUPPLY_NAME.test(String(e.core || "")));
-    if (entries.length && Array.isArray(productImages) && productImages.length) {
+    const generalAsk = entries.length >= 2 || /مستلزمات|الصناديق|الكراتين|كل المنتجات|المنتجات|اعرض/.test(text);
+    if (generalAsk && Array.isArray(productImages) && productImages.length) {
       const byLine = /* @__PURE__ */ new Map();
       for (const p of productImages) {
         if (!p || !p.link || !SUPPLY_NAME.test(String(p.core || ""))) continue;
@@ -3790,6 +3793,8 @@ function parseReply(raw, source, mode) {
       }
       const allSupplies = [...byLine.values()];
       if (allSupplies.length) entries = allSupplies;
+    } else if (entries.length > 1) {
+      entries = entries.slice(0, 1);
     }
   }
   const finalImages = entries.map((e) => e.img).filter(Boolean);

@@ -2187,6 +2187,17 @@ var require_api = __commonJS({
           const payload = Number.isFinite(chId) && chId > 0 ? { channelId: chId, message } : { message };
           return call("POST", `/contact/${cid(contactId)}/message`, payload);
         },
+        /**
+         * Send an image attachment to a contact. Respond.io message type "attachment"
+         * with attachment.type "image" works across WhatsApp, Messenger, and Instagram.
+         * The image URL must be publicly accessible (liwadates.com product images are).
+         */
+        sendImageMessage(contactId, imageUrl, channelId) {
+          const message = { type: "attachment", attachment: { type: "image", url: String(imageUrl || "") } };
+          const chId = channelId != null && channelId !== "" ? Number(channelId) : null;
+          const payload = Number.isFinite(chId) && chId > 0 ? { channelId: chId, message } : { message };
+          return call("POST", `/contact/${cid(contactId)}/message`, payload);
+        },
         /** List recent messages of a contact (for history sync). */
         listMessages(contactId, { limit = 30, cursor } = {}) {
           const qs = new URLSearchParams();
@@ -2515,11 +2526,42 @@ var require_router = __commonJS({
         return {};
       }
     }
+    function buildFarmerCards(reply) {
+      if (!reply) return [];
+      if (Array.isArray(reply.products) && reply.products.length) return reply.products.filter(Boolean);
+      if (reply.product) return [reply.product];
+      return [];
+    }
+    function composeCardText(replyText, reply, cards) {
+      if (!cards || !cards.length) return replyText;
+      let base = replyText;
+      if (cards.length === 1 && reply && reply.product && reply.product.caption != null) {
+        base = String(reply.product.caption).trim() || replyText;
+      }
+      const seen = /* @__PURE__ */ new Set();
+      const blocks = [];
+      for (const c of cards) {
+        if (!c) continue;
+        const title = String(c.title || "").trim();
+        const price = c.subtitle ? " \u2014 " + String(c.subtitle).trim() : "";
+        const url = c.url ? String(c.url).trim() : "";
+        let line = title + price;
+        if (url && !seen.has(url) && String(base || "").indexOf(url) === -1) {
+          line += (line ? "\n" : "") + url;
+          seen.add(url);
+        }
+        line = line.trim();
+        if (line) blocks.push(line);
+      }
+      if (!blocks.length) return base;
+      return (base ? base.trim() + "\n\n" : "") + blocks.join("\n\n");
+    }
     function createFarmerRouter(deps = {}) {
       const cfg = deps.cfg;
       const store = deps.store;
       const log2 = deps.log || console;
       const askAI2 = deps.askAI;
+      const ensureCatalog = typeof deps.ensureCatalog === "function" ? deps.ensureCatalog : null;
       if (typeof askAI2 !== "function") throw new Error("createFarmerRouter requires askAI");
       const fstate = deps.state || createFarmerState(store, { log: log2, historyLimit: cfg.historyLimit });
       const api = deps.api || createRespondioApi({ baseUrl: cfg.apiBaseUrl, token: cfg.apiToken, log: log2 });
@@ -2674,6 +2716,12 @@ var require_router = __commonJS({
               return { silent: "human_active" };
             }
           }
+          if (ensureCatalog) {
+            try {
+              await Promise.race([Promise.resolve(ensureCatalog()), new Promise((r) => setTimeout(r, 6e3))]);
+            } catch (_) {
+            }
+          }
           const convId = "respondio:" + contactId;
           const reply = await askAI2(String(job.text || ""), "whatsapp", convId, cfg.mode);
           let replyText = reply && reply.text && String(reply.text).trim() ? reply.text : "\u0645\u0639\u0644\u0634\u060C \u0645\u0645\u0643\u0646 \u062A\u0648\u0636\u0651\u062D \u0637\u0644\u0628\u0643 \u0623\u0643\u062A\u0631 \u0639\u0634\u0627\u0646 \u0623\u0642\u062F\u0631 \u0623\u0633\u0627\u0639\u062F\u0643\u061F";
@@ -2689,10 +2737,20 @@ var require_router = __commonJS({
               if (cfg.humanTakeoverFailClosed) return { silent: "store_error_fail_closed_presend" };
             }
           }
-          log2.info && log2.info("farmer_sending", { contactId: String(contactId), channelId: job.channelId, replyLen: replyText.length });
-          const sent = await api.sendTextMessage(contactId, replyText, job.channelId);
+          const cards = buildFarmerCards(reply);
+          const outText = composeCardText(replyText, reply, cards);
+          log2.info && log2.info("farmer_sending", { contactId: String(contactId), channelId: job.channelId, replyLen: outText.length, cards: cards.length });
+          const sent = await api.sendTextMessage(contactId, outText, job.channelId);
           const botMsgId = sent && (sent.messageId || sent.data && sent.data.messageId || sent.message && sent.message.messageId);
           log2.info && log2.info("farmer_sent_ok", { contactId: String(contactId), botMsgId: botMsgId ? String(botMsgId) : null });
+          for (const c of cards) {
+            if (!c.imageUrl) continue;
+            try {
+              await api.sendImageMessage(contactId, c.imageUrl, job.channelId);
+            } catch (e) {
+              log2.warn && log2.warn("farmer_image_send_failed", { err: String(e && e.message).slice(0, 80) });
+            }
+          }
           if (botMsgId) await fstate.markBotMessage(String(botMsgId));
           db.insertMessage({ messageId: botMsgId || "bot-" + (job.messageId || Date.now()), contactId, direction: "outgoing", senderType: "bot", text: replyText });
           db.upsertConversation({ contactId, lastOutgoingAt: (/* @__PURE__ */ new Date()).toISOString() });
@@ -2734,7 +2792,7 @@ var require_router = __commonJS({
       }
       return { router, processMessage, _internals: { fstate, api, db } };
     }
-    module2.exports = { createFarmerRouter };
+    module2.exports = { createFarmerRouter, buildFarmerCards, composeCardText };
   }
 });
 
@@ -5036,7 +5094,7 @@ try {
   if (farmerCfg.enabled) {
     const publicBase = (process.env.PUBLIC_BASE_URL || (process.env.VERCEL_URL ? "https://" + process.env.VERCEL_URL : "")).replace(/\/+$/, "");
     const workerUrl = process.env.RESPONDIO_WORKER_URL || (publicBase ? publicBase + "/api/jobs/respondio/farmers/message" : "");
-    const { router } = createFarmerRouter({ cfg: farmerCfg, store: kvStore, log, askAI, workerUrl });
+    const { router } = createFarmerRouter({ cfg: farmerCfg, store: kvStore, log, askAI, workerUrl, ensureCatalog: ensureFresh });
     app.use(router);
     log.info("respondio_farmer_router_mounted", { qstash: !!(farmerCfg.qstashToken && workerUrl), db: !!farmerCfg.databaseUrl });
   }

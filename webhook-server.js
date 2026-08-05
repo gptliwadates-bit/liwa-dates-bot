@@ -2599,6 +2599,25 @@ var require_router = __commonJS({
           channelId: ev.channelId,
           textLen: (ev.text || "").length
         });
+        if (cfg.humanTakeoverEnabled && ev.direction === "outgoing" && ev.contactId) {
+          let ours = false;
+          if (ev.messageId) {
+            try {
+              ours = await fstate.isBotMessage(String(ev.messageId));
+            } catch (_) {
+            }
+          }
+          if (!ours) {
+            try {
+              await fstate.setHumanActive(ev.contactId, { reason: "agent_outgoing" });
+            } catch (_) {
+            }
+            log2.info && log2.info("farmer_human_takeover_detected", { contactId: ev.contactId, messageId: ev.messageId });
+            db.recordWebhookEvent({ eventId, eventType: ev.eventType, messageId: ev.messageId, status: "human_takeover" });
+            return res.status(200).json({ ok: true, humanTakeover: true });
+          }
+          return res.status(200).json({ ignored: "own_outgoing" });
+        }
         if (!ev.isIncomingMessage || ev.senderType !== "contact") {
           log2.info && log2.info("farmer_webhook_ignored", { reason: "not_incoming_contact_message", isIncoming: ev.isIncomingMessage, senderType: ev.senderType });
           db.recordWebhookEvent({ eventId, eventType: ev.eventType, messageId: ev.messageId, status: "ignored" });

@@ -2479,11 +2479,12 @@ var require_facts = __commonJS({
 var require_supplies = __commonJS({
   "lib/respondio/supplies.js"(exports2, module2) {
     "use strict";
+    var jpg = (path) => "https://wsrv.nl/?url=liwadates.com" + path + "&output=jpg&q=85&w=1024";
     var FARMER_SUPPLIES = [
       {
         id: "FARM-DATE-DRYING-BOX",
         title: "\u0635\u064A\u0646\u064A\u0629 \u062A\u062C\u0641\u064A\u0641 \u0627\u0644\u062A\u0645\u0631",
-        imageUrl: "https://liwadates.com/wp-content/uploads/2026/03/1D2A2766.webp",
+        imageUrl: jpg("/wp-content/uploads/2026/03/1D2A2766.webp"),
         url: "https://liwadates.com/product/date-drying-tray/",
         price: "25 \u062F\u0631\u0647\u0645",
         re: /تجفيف|صيني[ةه]\s*التجفيف|drying|tray/i
@@ -2491,7 +2492,7 @@ var require_supplies = __commonJS({
       {
         id: "FARM-RUTAB-PACKING-BOX",
         title: "\u0635\u0646\u062F\u0648\u0642 \u062A\u0639\u0628\u0626\u0629 \u0627\u0644\u0631\u0637\u0628",
-        imageUrl: "https://liwadates.com/wp-content/uploads/2026/03/1D2A2752.webp",
+        imageUrl: jpg("/wp-content/uploads/2026/03/1D2A2752.webp"),
         url: "https://liwadates.com/product/rutab-storage-carton-box/",
         price: "50 \u0643\u0631\u062A\u0648\u0646 = 125 \u062F\u0631\u0647\u0645\u060C 100 \u0643\u0631\u062A\u0648\u0646 = 250 \u062F\u0631\u0647\u0645",
         re: /رطب|rutab/i
@@ -2499,7 +2500,7 @@ var require_supplies = __commonJS({
       {
         id: "FARM-DATE-STORAGE-CARTON-5KG",
         title: "\u0643\u0631\u062A\u0648\u0646 \u062A\u062E\u0632\u064A\u0646 \u0627\u0644\u062A\u0645\u0631 5 \u0643\u062C\u0645",
-        imageUrl: "https://liwadates.com/wp-content/uploads/2026/03/1D2A2753.webp",
+        imageUrl: jpg("/wp-content/uploads/2026/03/1D2A2753.webp"),
         url: "https://liwadates.com/product/5kg-date-storage-box/",
         price: "50 \u0635\u0646\u062F\u0648\u0642 = 250 \u062F\u0631\u0647\u0645\u060C 100 \u0635\u0646\u062F\u0648\u0642 = 500 \u062F\u0631\u0647\u0645",
         re: /تخزين\s*التمر|كرتون\s*تخزين|5\s*(?:كجم|كيلو|كج|kg)|storage/i
@@ -2601,13 +2602,15 @@ var require_router = __commonJS({
       }
       const seen = /* @__PURE__ */ new Set();
       const blocks = [];
+      const baseStr = String(base || "");
       for (const c of cards) {
         if (!c) continue;
         const title = String(c.title || "").trim();
-        const price = c.subtitle ? " \u2014 " + String(c.subtitle).trim() : "";
+        const subtitle = c.subtitle ? String(c.subtitle).trim() : "";
         const url = c.url ? String(c.url).trim() : "";
-        let line = title + price;
-        if (url && !seen.has(url) && String(base || "").indexOf(url) === -1) {
+        const priceAlreadySaid = subtitle && baseStr.includes(subtitle);
+        let line = priceAlreadySaid ? "" : title + (subtitle ? " \u2014 " + subtitle : "");
+        if (url && !seen.has(url) && baseStr.indexOf(url) === -1) {
           line += (line ? "\n" : "") + url;
           seen.add(url);
         }

@@ -2171,7 +2171,11 @@ var require_api = __commonJS({
         }
         return json;
       }
-      const cid = (contactId) => "id:" + cid(contactId);
+      const cid = (contactId) => {
+        const s = String(contactId == null ? "" : contactId);
+        if (/^(id|phone|email):/i.test(s)) return s;
+        return "id:" + encodeURIComponent(s);
+      };
       return {
         RespondioApiError,
         /** Send a text message to a contact. */

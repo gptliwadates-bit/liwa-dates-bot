@@ -2141,16 +2141,27 @@ var require_api = __commonJS({
       async function call(method, path, body) {
         if (!token) throw new RespondioApiError("respondio_api_token_missing", 401);
         const url = base + path;
-        const res = await fetchSafe2(
-          url,
-          {
-            method,
-            headers: { authorization: "Bearer " + token, "content-type": "application/json", accept: "application/json" },
-            body: body != null ? JSON.stringify(body) : void 0
-          },
-          { timeoutMs: 12e3, retries: 0, log: log2 }
-        );
-        const status = res.status;
+        let res;
+        try {
+          res = await fetchSafe2(
+            url,
+            {
+              method,
+              headers: { authorization: "Bearer " + token, "content-type": "application/json", accept: "application/json" },
+              body: body != null ? JSON.stringify(body) : void 0
+            },
+            { timeoutMs: 12e3, retries: 0, log: log2 }
+          );
+        } catch (e) {
+          const status = e && e.status ? e.status : 0;
+          let bodyText = "";
+          try {
+            if (e && e.response && e.response.text) bodyText = await e.response.text();
+          } catch (_) {
+          }
+          if (log2 && log2.error) log2.error("respondio_api_error", { method, path, status, body: String(bodyText).slice(0, 300) });
+          throw new RespondioApiError("respondio_api_" + status, status, bodyText);
+        }
         let json = null;
         const txt = await res.text().catch(() => "");
         try {
@@ -2158,54 +2169,52 @@ var require_api = __commonJS({
         } catch {
           json = { raw: txt };
         }
-        if (status < 200 || status >= 300) {
-          const code = json && (json.code || json.error);
-          throw new RespondioApiError("respondio_api_" + status + (code ? ":" + code : ""), status, json);
-        }
         return json;
       }
+      const cid = (contactId) => "id:" + cid(contactId);
       return {
         RespondioApiError,
         /** Send a text message to a contact. */
         sendTextMessage(contactId, text, channelId) {
           const message = { type: "text", text: String(text || "") };
-          const payload = channelId ? { channelId: String(channelId), message } : { message };
-          return call("POST", `/contact/${encodeURIComponent(contactId)}/message`, payload);
+          const chId = channelId != null && channelId !== "" ? Number(channelId) : null;
+          const payload = Number.isFinite(chId) && chId > 0 ? { channelId: chId, message } : { message };
+          return call("POST", `/contact/${cid(contactId)}/message`, payload);
         },
         /** List recent messages of a contact (for history sync). */
         listMessages(contactId, { limit = 30, cursor } = {}) {
           const qs = new URLSearchParams();
           qs.set("limit", String(limit));
           if (cursor) qs.set("cursorId", String(cursor));
-          return call("GET", `/contact/${encodeURIComponent(contactId)}/message?${qs.toString()}`);
+          return call("GET", `/contact/${cid(contactId)}/message?${qs.toString()}`);
         },
         /** Get a contact (tags, custom fields, assignee). */
         getContact(contactId) {
-          return call("GET", `/contact/${encodeURIComponent(contactId)}`);
+          return call("GET", `/contact/${cid(contactId)}`);
         },
         /** Assign the contact's conversation to a user and/or team. */
         assign(contactId, { assignee, teamId } = {}) {
           const payload = {};
           if (assignee) payload.assignee = String(assignee);
           if (teamId) payload.teamId = String(teamId);
-          return call("POST", `/contact/${encodeURIComponent(contactId)}/conversation/assignee`, payload);
+          return call("POST", `/contact/${cid(contactId)}/conversation/assignee`, payload);
         },
         addTag(contactId, tag) {
-          return call("POST", `/contact/${encodeURIComponent(contactId)}/tag`, { tags: [String(tag)] });
+          return call("POST", `/contact/${cid(contactId)}/tag`, { tags: [String(tag)] });
         },
         removeTag(contactId, tag) {
-          return call("DELETE", `/contact/${encodeURIComponent(contactId)}/tag`, { tags: [String(tag)] });
+          return call("DELETE", `/contact/${cid(contactId)}/tag`, { tags: [String(tag)] });
         },
         /** Post an internal comment (agent-only note). */
         addComment(contactId, text) {
-          return call("POST", `/contact/${encodeURIComponent(contactId)}/comment`, { text: String(text || "") });
+          return call("POST", `/contact/${cid(contactId)}/comment`, { text: String(text || "") });
         },
         /** Close (mark done) the contact's open conversation. */
         closeConversation(contactId, { category, summary } = {}) {
           const payload = {};
           if (category) payload.category = category;
           if (summary) payload.summary = summary;
-          return call("POST", `/contact/${encodeURIComponent(contactId)}/conversation/close`, payload);
+          return call("POST", `/contact/${cid(contactId)}/conversation/close`, payload);
         }
       };
     }

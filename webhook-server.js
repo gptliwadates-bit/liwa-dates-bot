@@ -2824,6 +2824,28 @@ var require_router = __commonJS({
           let cards = matchSupplyCards(replyText);
           if (!cards.length) cards = matchSupplyCards(String(job.text || ""));
           if (!cards.length) cards = buildFarmerCards(reply);
+          const askedForMedia = /صور|صوره|صورة|لينك|رابط|روابط|photo|image|link/i.test(String(job.text || ""));
+          if (cards.length && !askedForMedia) {
+            const fresh = [];
+            for (const c of cards) {
+              const key = "respondio:farmer:cardsent:" + contactId + ":" + String(c.id || c.url || c.title);
+              let first = true;
+              try {
+                first = await store.setNX(key, "1", 24 * 60 * 60);
+              } catch (_) {
+              }
+              if (first) fresh.push(c);
+            }
+            cards = fresh;
+          } else if (cards.length && askedForMedia) {
+            for (const c of cards) {
+              const key = "respondio:farmer:cardsent:" + contactId + ":" + String(c.id || c.url || c.title);
+              try {
+                await store.set(key, "1", 24 * 60 * 60);
+              } catch (_) {
+              }
+            }
+          }
           const outText = composeCardText(replyText, reply, cards);
           log2.info && log2.info("farmer_sending", { contactId: String(contactId), channelId: job.channelId, replyLen: outText.length, cards: cards.length });
           const sent = await api.sendTextMessage(contactId, outText, job.channelId);

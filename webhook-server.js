@@ -1881,7 +1881,9 @@ var require_webhook = __commonJS({
       const msg = _pick(body, "message", "data.message", "payload.message") || {};
       const contact = _pick(body, "contact", "data.contact", "payload.contact") || {};
       const conversation = _pick(body, "conversation", "data.conversation") || {};
-      const direction = String(_pick(msg, "direction") || _pick(body, "direction") || "").toLowerCase() || null;
+      const direction = String(
+        _pick(msg, "direction") || _pick(msg, "traffic") || _pick(body, "direction") || _pick(body, "traffic") || ""
+      ).toLowerCase() || null;
       const senderRole = String(
         _pick(msg, "traffic", "sender.type", "sender_type") || _pick(body, "sender.type") || ""
       ).toLowerCase();
@@ -2542,7 +2544,17 @@ var require_router = __commonJS({
         const body = parseBody(req);
         const ev = parseIncomingEvent(body);
         const eventId = String(body && (body.event_id || body.id) || ev.messageId || Date.now());
+        log2.info && log2.info("farmer_webhook_in", {
+          topKeys: Object.keys(body || {}).slice(0, 12),
+          eventType: ev.eventType,
+          isIncoming: ev.isIncomingMessage,
+          senderType: ev.senderType,
+          contactId: ev.contactId,
+          channelId: ev.channelId,
+          textLen: (ev.text || "").length
+        });
         if (!ev.isIncomingMessage || ev.senderType !== "contact") {
+          log2.info && log2.info("farmer_webhook_ignored", { reason: "not_incoming_contact_message", isIncoming: ev.isIncomingMessage, senderType: ev.senderType });
           db.recordWebhookEvent({ eventId, eventType: ev.eventType, messageId: ev.messageId, status: "ignored" });
           return res.status(200).json({ ignored: "not_incoming_contact_message" });
         }
@@ -2677,8 +2689,10 @@ var require_router = __commonJS({
               if (cfg.humanTakeoverFailClosed) return { silent: "store_error_fail_closed_presend" };
             }
           }
+          log2.info && log2.info("farmer_sending", { contactId: String(contactId), channelId: job.channelId, replyLen: replyText.length });
           const sent = await api.sendTextMessage(contactId, replyText, job.channelId);
           const botMsgId = sent && (sent.messageId || sent.data && sent.data.messageId || sent.message && sent.message.messageId);
+          log2.info && log2.info("farmer_sent_ok", { contactId: String(contactId), botMsgId: botMsgId ? String(botMsgId) : null });
           if (botMsgId) await fstate.markBotMessage(String(botMsgId));
           db.insertMessage({ messageId: botMsgId || "bot-" + (job.messageId || Date.now()), contactId, direction: "outgoing", senderType: "bot", text: replyText });
           db.upsertConversation({ contactId, lastOutgoingAt: (/* @__PURE__ */ new Date()).toISOString() });
